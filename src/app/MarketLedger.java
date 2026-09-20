@@ -11,6 +11,7 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.Executors;
+import java.util.zip.*;
 
 public class MarketLedger {
   static final int PORT = port();
@@ -109,8 +110,10 @@ public class MarketLedger {
       if(p.matches("/api/notes/\\d+") && m.equals("DELETE")) { deleteNote(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.equals("/api/quotes/refresh") && m.equals("POST")) { refreshQuotes(x); return; }
       if(p.startsWith("/api/market/") && m.equals("GET")) { marketData(x,p.substring("/api/market/".length())); return; }
-      if(p.equals("/api/info") && m.equals("GET")) { json(x,200,"{\"port\":"+PORT+",\"lanIp\":"+q(lanIp())+"}"); return; }
+      if(p.equals("/api/info") && m.equals("GET")) { boolean cloud=System.getenv("RENDER")!=null; json(x,200,"{\"port\":"+PORT+",\"lanIp\":"+q(lanIp())+",\"cloud\":"+cloud+"}"); return; }
       if(p.equals("/api/export") && m.equals("GET")) { exportCsv(x); return; }
+      if(p.equals("/api/backup") && m.equals("GET")) { downloadBackup(x); return; }
+      if(p.equals("/api/backup/restore") && m.equals("POST")) { restoreBackup(x); return; }
       json(x,404,"{\"error\":\"Not found\"}");
     } catch(Exception e) { json(x,400,"{\"error\":"+q(e.getMessage()==null?"Request failed":e.getMessage())+"}"); }
   }
@@ -276,6 +279,30 @@ public class MarketLedger {
   static String q(String s){if(s==null)return"null";return "\""+s.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n").replace("\r","\\r").replace("\t","\\t")+"\"";}
   static String csv(String s){return "\""+(s==null?"":s).replace("\"","\"\"")+"\"";}
   static String callJson(Call c){return "{\"id\":"+c.id+",\"symbol\":"+q(c.symbol)+",\"direction\":"+q(c.direction)+",\"baseline\":"+c.baseline+",\"threshold\":"+c.threshold+",\"due\":"+q(c.due)+",\"note\":"+q(c.note)+",\"status\":"+q(c.status)+",\"resolved\":"+c.resolved+",\"move\":"+c.move+",\"created\":"+q(c.created)+",\"resolvedAt\":"+q(c.resolvedAt)+"}";}
+  static final List<String> BACKUP_FILES=List.of("stocks.tsv","calls.tsv","notes.tsv","events.tsv","signals.tsv");
+  static void downloadBackup(HttpExchange x)throws IOException{
+    ByteArrayOutputStream bout=new ByteArrayOutputStream();
+    try(ZipOutputStream z=new ZipOutputStream(bout,StandardCharsets.UTF_8)){
+      for(String name:BACKUP_FILES){Path f=DATA.resolve(name);if(!Files.exists(f))continue;z.putNextEntry(new ZipEntry(name));Files.copy(f,z);z.closeEntry();}
+      z.putNextEntry(new ZipEntry("BACKUP-INFO.txt"));
+      z.write(("MarketLedger Pro cloud data backup\nCreated: "+Instant.now()+"\nSecrets/API credentials are intentionally excluded.\n").getBytes(StandardCharsets.UTF_8));z.closeEntry();
+    }
+    byte[] b=bout.toByteArray();
+    x.getResponseHeaders().set("Content-Type","application/zip");
+    x.getResponseHeaders().set("Content-Disposition","attachment; filename=MarketLedger-Pro-Backup-"+LocalDate.now()+".zip");
+    x.getResponseHeaders().set("Cache-Control","no-store");x.sendResponseHeaders(200,b.length);x.getResponseBody().write(b);x.close();
+  }
+  static void restoreBackup(HttpExchange x)throws Exception{
+    int max=25*1024*1024; byte[] raw=x.getRequestBody().readNBytes(max+1); if(raw.length>max)throw new Exception("Backup is larger than 25 MB");
+    Map<String,byte[]> incoming=new HashMap<>();
+    try(ZipInputStream z=new ZipInputStream(new ByteArrayInputStream(raw),StandardCharsets.UTF_8)){
+      ZipEntry e; while((e=z.getNextEntry())!=null){String name=Paths.get(e.getName()).getFileName().toString();if(BACKUP_FILES.contains(name)){byte[] data=z.readNBytes(max+1);if(data.length>max)throw new Exception("Backup entry too large");incoming.put(name,data);}z.closeEntry();}
+    }
+    if(incoming.isEmpty())throw new Exception("No MarketLedger data files found in backup");
+    synchronized(LOCK){backupData();for(var e:incoming.entrySet()){Path dst=DATA.resolve(e.getKey()),tmp=DATA.resolve(e.getKey()+".restore.tmp");Files.write(tmp,e.getValue());try{Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException ex){Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING);}}}
+    json(x,200,"{\"ok\":true,\"restored\":"+incoming.size()+"}");
+  }
+
   static byte[] resource(String n)throws IOException{try(InputStream in=MarketLedger.class.getResourceAsStream(n)){if(in==null)throw new FileNotFoundException(n);return in.readAllBytes();}}
   static void bytes(HttpExchange x,int code,String type,byte[] b)throws IOException{x.getResponseHeaders().set("Content-Type",type);x.getResponseHeaders().set("Cache-Control","no-store");x.sendResponseHeaders(code,b.length);x.getResponseBody().write(b);x.close();}
   static void json(HttpExchange x,int code,String s)throws IOException{bytes(x,code,"application/json; charset=utf-8",s.getBytes(StandardCharsets.UTF_8));}
