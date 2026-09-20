@@ -1,0 +1,6 @@
+out
+*.jar
+data
+.git
+.gitignore
+*.zip

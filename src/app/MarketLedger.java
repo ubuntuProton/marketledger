@@ -13,12 +13,20 @@ import java.util.*;
 import java.util.concurrent.Executors;
 
 public class MarketLedger {
-  static final int PORT = Integer.getInteger("marketledger.port", 8080);
+  static final int PORT = port();
+  static final String ACCESS_PASSWORD = System.getenv().getOrDefault("MARKETLEDGER_PASSWORD", "").trim();
+  static final Set<String> SESSIONS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  static int port(){
+    String e=System.getenv("PORT");
+    if(e!=null&&!e.isBlank()) try{return Integer.parseInt(e.trim());}catch(Exception ignored){}
+    return Integer.getInteger("marketledger.port",8080);
+  }
   static final Path DATA = dataHome();
   static final Path STOCKS = DATA.resolve("stocks.tsv"), CALLS = DATA.resolve("calls.tsv"), NOTES = DATA.resolve("notes.tsv"), EVENTS = DATA.resolve("events.tsv"), SIGNALS = DATA.resolve("signals.tsv"), SETTINGS = DATA.resolve("settings.properties");
   static final Path BACKUPS = DATA.resolve("backups");
   static Path dataHome(){
     String override=System.getProperty("marketledger.dataDir","").trim();
+    if(override.isBlank()) override=System.getenv().getOrDefault("MARKETLEDGER_DATA_DIR","").trim();
     if(!override.isBlank()) return Paths.get(override).toAbsolutePath();
     String local=System.getenv("LOCALAPPDATA");
     if(local!=null && !local.isBlank()) return Paths.get(local,"MarketLedgerPro");
@@ -41,8 +49,10 @@ public class MarketLedger {
     server.setExecutor(Executors.newCachedThreadPool()); server.start();
     System.out.println("Market Ledger running at http://localhost:"+PORT);
     System.out.println("Data folder: "+DATA.toAbsolutePath());
-    System.out.println("Mobile: connect phone to the same Wi-Fi and open http://"+lanIp()+":"+PORT);
-    try { if(Desktop.isDesktopSupported()) Desktop.getDesktop().browse(new URI("http://localhost:"+PORT)); } catch(Throwable ignored){}
+    if(System.getenv("RENDER")==null){
+      System.out.println("Mobile: connect phone to the same Wi-Fi and open http://"+lanIp()+":"+PORT);
+      try { if(Desktop.isDesktopSupported()) Desktop.getDesktop().browse(new URI("http://localhost:"+PORT)); } catch(Throwable ignored){}
+    } else System.out.println("Cloud mode: HTTPS is terminated by the hosting platform.");
   }
 
 
@@ -66,6 +76,14 @@ public class MarketLedger {
   static void route(HttpExchange x) throws IOException {
     try {
       String p=x.getRequestURI().getPath(), m=x.getRequestMethod();
+      if(p.equals("/healthz")){json(x,200,"{\"ok\":true}");return;}
+      if(p.equals("/login") && m.equals("GET")){loginPage(x,"");return;}
+      if(p.equals("/login") && m.equals("POST")){login(x);return;}
+      if(p.equals("/logout")){logout(x);return;}
+      if(!authorized(x)){
+        if(p.startsWith("/api/")){json(x,401,"{\"error\":\"Authentication required\"}");return;}
+        redirect(x,"/login");return;
+      }
       if(p.equals("/") && m.equals("GET")) { bytes(x,200,"text/html; charset=utf-8",resource("/resources/index.html")); return; }
       if(p.equals("/manifest.webmanifest") && m.equals("GET")) { bytes(x,200,"application/manifest+json; charset=utf-8",resource("/resources/manifest.webmanifest")); return; }
       if(p.equals("/sw.js") && m.equals("GET")) { bytes(x,200,"application/javascript; charset=utf-8",resource("/resources/sw.js")); return; }
@@ -96,6 +114,28 @@ public class MarketLedger {
       json(x,404,"{\"error\":\"Not found\"}");
     } catch(Exception e) { json(x,400,"{\"error\":"+q(e.getMessage()==null?"Request failed":e.getMessage())+"}"); }
   }
+
+  static boolean authorized(HttpExchange x){
+    if(ACCESS_PASSWORD.isBlank()) return true;
+    String cookie=x.getRequestHeaders().getFirst("Cookie"); if(cookie==null)return false;
+    for(String c:cookie.split(";")){String v=c.trim();if(v.startsWith("ml_session=")&&SESSIONS.contains(v.substring(11)))return true;}
+    return false;
+  }
+  static void loginPage(HttpExchange x,String error)throws IOException{
+    String html="<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'><meta name='theme-color' content='#071019'><link rel='apple-touch-icon' href='/apple-touch-icon.png'><title>MarketLedger Login</title><style>body{margin:0;background:#071019;color:#eef6ff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:grid;min-height:100vh;place-items:center}.c{width:min(88vw,390px);background:#0e1b29;border:1px solid #24384c;border-radius:20px;padding:28px;box-shadow:0 20px 60px #0008}h1{margin:0 0 6px;font-size:26px}.s{color:#8ea6bd;margin-bottom:24px}input,button{box-sizing:border-box;width:100%;padding:14px;border-radius:12px;font-size:16px}input{background:#08131e;color:white;border:1px solid #31475c;margin:8px 0 14px}button{background:#2f80ed;color:white;border:0;font-weight:700}.e{color:#ff9a9a;margin:8px 0}</style></head><body><div class='c'><h1>MarketLedger Pro</h1><div class='s'>Secure cloud access</div>"+(error.isBlank()?"":"<div class='e'>"+esc(error)+"</div>")+"<form method='post' action='/login'><label>Password</label><input name='password' type='password' autocomplete='current-password' autofocus required><button type='submit'>Open MarketLedger</button></form></div></body></html>";
+    bytes(x,200,"text/html; charset=utf-8",html.getBytes(StandardCharsets.UTF_8));
+  }
+  static void login(HttpExchange x)throws Exception{
+    if(ACCESS_PASSWORD.isBlank()){redirect(x,"/");return;}
+    String supplied=form(x).getOrDefault("password","");
+    if(!java.security.MessageDigest.isEqual(supplied.getBytes(StandardCharsets.UTF_8),ACCESS_PASSWORD.getBytes(StandardCharsets.UTF_8))){loginPage(x,"Incorrect password");return;}
+    byte[] r=new byte[32];new java.security.SecureRandom().nextBytes(r);String token=Base64.getUrlEncoder().withoutPadding().encodeToString(r);SESSIONS.add(token);
+    x.getResponseHeaders().add("Set-Cookie","ml_session="+token+"; Path=/; HttpOnly"+secureCookie()+"; SameSite=Strict; Max-Age=2592000");redirect(x,"/");
+  }
+  static void logout(HttpExchange x)throws IOException{String cookie=x.getRequestHeaders().getFirst("Cookie");if(cookie!=null)for(String c:cookie.split(";")){String v=c.trim();if(v.startsWith("ml_session="))SESSIONS.remove(v.substring(11));}x.getResponseHeaders().add("Set-Cookie","ml_session=; Path=/; HttpOnly"+secureCookie()+"; SameSite=Strict; Max-Age=0");redirect(x,"/login");}
+  static String secureCookie(){return (System.getenv("RENDER")!=null||"true".equalsIgnoreCase(System.getenv("MARKETLEDGER_SECURE_COOKIE")))?"; Secure":"";}
+  static void redirect(HttpExchange x,String to)throws IOException{x.getResponseHeaders().set("Location",to);x.sendResponseHeaders(302,-1);x.close();}
+  static String esc(String s){return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\"","&quot;");}
 
   static String dashboard() throws IOException {
     synchronized(LOCK){
@@ -158,7 +198,7 @@ public class MarketLedger {
   static void writeEvents(List<Event>a)throws IOException{var l=new ArrayList<String>();for(var e:a)l.add(e.id+"\t"+en(e.when)+"\t"+en(e.type)+"\t"+en(e.impact)+"\t"+en(e.scope)+"\t"+en(e.title)+"\t"+en(e.created));atomic(EVENTS,l);}
 
 
-  static Properties marketSettings() throws IOException { Properties p=new Properties(); if(Files.exists(SETTINGS)) try(InputStream in=Files.newInputStream(SETTINGS)){p.load(in);} return p; }
+  static Properties marketSettings() throws IOException { Properties p=new Properties(); if(Files.exists(SETTINGS)) try(InputStream in=Files.newInputStream(SETTINGS)){p.load(in);} String k=System.getenv().getOrDefault("ALPACA_API_KEY","").trim(), sec=System.getenv().getOrDefault("ALPACA_API_SECRET","").trim(); if(!k.isBlank())p.setProperty("alpaca.key",k); if(!sec.isBlank())p.setProperty("alpaca.secret",sec); if(!k.isBlank()&&!sec.isBlank())p.setProperty("provider","ALPACA"); return p; }
   static String[] alpacaConnection(Properties p){String provider=p.getProperty("provider","YAHOO");String key=p.getProperty("alpaca.key",""),secret=p.getProperty("alpaca.secret","");if(!provider.equals("ALPACA"))return new String[]{"FALLBACK","Yahoo selected"};if(key.isBlank()||secret.isBlank())return new String[]{"MISSING","Alpaca credentials are incomplete"};try{HttpResponse<String> r=alpacaGet("https://data.alpaca.markets/v2/stocks/SPY/snapshot","iex");int c=r.statusCode();if(c==200)return new String[]{"CONNECTED","Authenticated Alpaca IEX snapshot available"};if(c==401||c==403)return new String[]{"AUTH_FAILED","Alpaca rejected the API credentials (HTTP "+c+")"};if(c==429)return new String[]{"RATE_LIMITED","Alpaca rate limit reached; Yahoo candle fallback remains active"};if(c==404||c==204)return new String[]{"NO_DATA","Alpaca authenticated but returned no snapshot data"};return new String[]{"FALLBACK","Alpaca returned HTTP "+c+"; Yahoo fallback remains active"};}catch(Exception e){return new String[]{"FALLBACK","Alpaca connection unavailable: "+(e.getMessage()==null?"request failed":e.getMessage())};}}
   static void marketSettingsGet(HttpExchange x)throws Exception{Properties p=marketSettings();String provider=p.getProperty("provider","YAHOO");boolean configured=!p.getProperty("alpaca.key","").isBlank()&&!p.getProperty("alpaca.secret","").isBlank();String[] c=alpacaConnection(p);json(x,200,"{\"provider\":"+q(provider)+",\"alpacaConfigured\":"+configured+",\"fallback\":\"YAHOO\",\"connection\":"+q(c[0])+",\"detail\":"+q(c[1])+"}");}
   static void marketSettingsSave(HttpExchange x)throws Exception{Map<String,String>f=form(x);Properties p=marketSettings();String key=f.getOrDefault("key","").trim(),secret=f.getOrDefault("secret","").trim();String provider=f.getOrDefault("provider",p.getProperty("provider","YAHOO")).toUpperCase(Locale.ROOT);if(!key.isBlank()&&!secret.isBlank())provider="ALPACA";if(!provider.equals("YAHOO")&&!provider.equals("ALPACA"))throw new Exception("Provider must be YAHOO or ALPACA");p.setProperty("provider",provider);if(!key.isBlank())p.setProperty("alpaca.key",key);if(!secret.isBlank())p.setProperty("alpaca.secret",secret);if("true".equalsIgnoreCase(f.getOrDefault("clear","false"))){p.remove("alpaca.key");p.remove("alpaca.secret");p.setProperty("provider","YAHOO");provider="YAHOO";}Files.createDirectories(DATA);Path tmp=SETTINGS.resolveSibling("settings.properties.tmp");try(OutputStream out=Files.newOutputStream(tmp)){p.store(out,"MarketLedger Pro local settings - keep private");}try{Files.move(tmp,SETTINGS,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException e){Files.move(tmp,SETTINGS,StandardCopyOption.REPLACE_EXISTING);}p=marketSettings();String[] c=alpacaConnection(p);boolean configured=!p.getProperty("alpaca.key","").isBlank()&&!p.getProperty("alpaca.secret","").isBlank();json(x,200,"{\"ok\":true,\"provider\":"+q(p.getProperty("provider","YAHOO"))+",\"alpacaConfigured\":"+configured+",\"connection\":"+q(c[0])+",\"detail\":"+q(c[1])+"}");}
