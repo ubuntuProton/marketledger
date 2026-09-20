@@ -2,16 +2,12 @@ services:
   - type: web
     name: marketledger-pro
     runtime: docker
-    plan: 0.5c-512mb
+    plan: free
     healthCheckPath: /healthz
     numInstances: 1
-    disk:
-      name: marketledger-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: MARKETLEDGER_DATA_DIR
-        value: /var/data/marketledger
+        value: /tmp/marketledger
       - key: MARKETLEDGER_PASSWORD
         sync: false
       - key: ALPACA_API_KEY
