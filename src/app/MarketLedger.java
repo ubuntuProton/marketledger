@@ -331,6 +331,32 @@ public class MarketLedger {
   static String diagJson(ProviderDiag d){
     return "{\"provider\":\""+esc(d.provider)+"\",\"http\":"+d.http+",\"contentType\":\""+esc(d.contentType)+"\",\"header\":\""+esc(d.header)+"\",\"rows\":"+d.rows+",\"parsed\":"+d.parsed+",\"matches\":"+d.matches+",\"note\":\""+esc(d.note)+"\"}";
   }
+  static void outcomeStatusEndpoint(HttpExchange x)throws Exception{
+    long total=0,m15=0,m30=0,m60=0,mfe=0,mae=0;
+    String storage="local/unknown", note="";
+    try{
+      if(!DATABASE_URL.isBlank()){
+        storage="PostgreSQL";
+        try(Connection c=db(); Statement st=c.createStatement();
+            ResultSet r=st.executeQuery("""
+              SELECT COUNT(*) total,
+                     COUNT(return_15m) m15,
+                     COUNT(return_30m) m30,
+                     COUNT(return_60m) m60,
+                     COUNT(max_gain_60m) mfe,
+                     COUNT(max_drawdown_60m) mae
+              FROM signal_outcomes
+            """)){
+          if(r.next()){total=r.getLong("total");m15=r.getLong("m15");m30=r.getLong("m30");m60=r.getLong("m60");mfe=r.getLong("mfe");mae=r.getLong("mae");}
+        }
+      }else note="PostgreSQL not active; cloud outcome validation requires the persistent database.";
+    }catch(Exception e){note="Outcome status query failed: "+e.getMessage();}
+    String state=(m60>0&&mfe>0&&mae>0)?"MEASURING":(total>0?"WAITING_FOR_MATURE_SIGNALS":"NO_SIGNALS");
+    json(x,200,"{\"state\":\""+esc(state)+"\",\"storage\":\""+esc(storage)+"\",\"total\":"+total+
+      ",\"measured15\":"+m15+",\"measured30\":"+m30+",\"measured60\":"+m60+
+      ",\"measuredMfe\":"+mfe+",\"measuredMae\":"+mae+",\"note\":\""+esc(note)+"\"}");
+  }
+
   static void earningsVerificationEndpoint(HttpExchange x)throws Exception{
     StringBuilder b=new StringBuilder("[");boolean first=true;
     for(var v:LAST_EARNINGS_VERIFICATION.values()){
@@ -858,6 +884,7 @@ public class MarketLedger {
       if(p.equals("/api/context/corporate/diagnostics") && m.equals("GET")) { corporateDiagnosticsEndpoint(x); return; }
       if(p.equals("/api/context/earnings/meta") && m.equals("GET")) { earningsMetaEndpoint(x); return; }
       if(p.equals("/api/context/earnings/verification") && m.equals("GET")) { earningsVerificationEndpoint(x); return; }
+      if(p.equals("/api/outcomes/status") && m.equals("GET")) { outcomeStatusEndpoint(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("GET")) { marketSettingsGet(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
