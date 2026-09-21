@@ -11,6 +11,7 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.*;
 import java.sql.*;
 
@@ -52,6 +53,7 @@ public class MarketLedger {
     HttpServer server=HttpServer.create(new InetSocketAddress("0.0.0.0",PORT),0);
     server.createContext("/", MarketLedger::route);
     server.setExecutor(Executors.newCachedThreadPool()); server.start();
+    startOutcomeWorker();
     System.out.println("Market Ledger running at http://localhost:"+PORT);
     System.out.println("Data folder: "+DATA.toAbsolutePath());
     if(System.getenv("RENDER")==null){
@@ -80,6 +82,17 @@ public class MarketLedger {
       st.executeUpdate("CREATE TABLE IF NOT EXISTS watchlist (symbol VARCHAR(20) PRIMARY KEY, name TEXT NOT NULL DEFAULT '', price DOUBLE PRECISION, prev_price DOUBLE PRECISION, updated_at TEXT)");
       st.executeUpdate("CREATE TABLE IF NOT EXISTS signal_observations (id BIGINT PRIMARY KEY, symbol VARCHAR(20) NOT NULL, candle_ts BIGINT NOT NULL, captured_at TEXT, price DOUBLE PRECISION, final_status VARCHAR(30), technical_score INTEGER, session VARCHAR(30), rsi14 DOUBLE PRECISION, vwap DOUBLE PRECISION, momentum_5m DOUBLE PRECISION, relative_volume DOUBLE PRECISION, atr_pct DOUBLE PRECISION, spread_pct DOUBLE PRECISION, market_context TEXT, event_context TEXT, UNIQUE(symbol,candle_ts))");
       st.executeUpdate("CREATE TABLE IF NOT EXISTS signal_outcomes (signal_id BIGINT PRIMARY KEY REFERENCES signal_observations(id) ON DELETE CASCADE, return_15m DOUBLE PRECISION, return_30m DOUBLE PRECISION, return_60m DOUBLE PRECISION, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS price_15m DOUBLE PRECISION");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS measured_15m_at TIMESTAMPTZ");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS price_30m DOUBLE PRECISION");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS measured_30m_at TIMESTAMPTZ");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS price_60m DOUBLE PRECISION");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS measured_60m_at TIMESTAMPTZ");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS max_gain_60m DOUBLE PRECISION");
+      st.executeUpdate("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS max_drawdown_60m DOUBLE PRECISION");
+      st.executeUpdate("ALTER TABLE signal_observations ADD COLUMN IF NOT EXISTS captured_at_ts TIMESTAMPTZ");
+      st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_signal_obs_symbol_ts ON signal_observations(symbol,candle_ts)");
+      st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_signal_obs_status_session ON signal_observations(final_status,session)");
       st.executeUpdate("CREATE TABLE IF NOT EXISTS market_events (id BIGINT PRIMARY KEY, event_time TEXT, type VARCHAR(40), impact VARCHAR(20), scope TEXT, title TEXT, created_at TEXT)");
       st.executeUpdate("CREATE TABLE IF NOT EXISTS research_notes (id BIGINT PRIMARY KEY, title TEXT, body TEXT, tag VARCHAR(40), created_at TEXT)");
       st.executeUpdate("CREATE TABLE IF NOT EXISTS prediction_calls (id BIGINT PRIMARY KEY, symbol VARCHAR(20), direction VARCHAR(10), baseline DOUBLE PRECISION, threshold DOUBLE PRECISION, due_date TEXT, note TEXT, status VARCHAR(20), resolved_price DOUBLE PRECISION, move_pct DOUBLE PRECISION, created_at TEXT, resolved_at TEXT)");
@@ -112,14 +125,51 @@ public class MarketLedger {
     if(!DATABASE_READY)return;
     try(Connection c=db()){
       c.setAutoCommit(false);
-      try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM signal_outcomes");st.executeUpdate("DELETE FROM signal_observations");st.executeUpdate("DELETE FROM watchlist");st.executeUpdate("DELETE FROM market_events");st.executeUpdate("DELETE FROM research_notes");st.executeUpdate("DELETE FROM prediction_calls");}
+      try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM watchlist");st.executeUpdate("DELETE FROM market_events");st.executeUpdate("DELETE FROM research_notes");st.executeUpdate("DELETE FROM prediction_calls");}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO watchlist(symbol,name,price,prev_price,updated_at) VALUES(?,?,?,?,?)")){for(var z:readStocks()){ps.setString(1,z.symbol);ps.setString(2,z.name);ps.setDouble(3,z.price);ps.setDouble(4,z.prev);ps.setString(5,z.updated);ps.addBatch();}ps.executeBatch();}
-      try(PreparedStatement so=c.prepareStatement("INSERT INTO signal_observations(id,symbol,candle_ts,captured_at,price,final_status,technical_score,session,rsi14,vwap,momentum_5m,relative_volume,atr_pct,spread_pct,market_context,event_context) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"); PreparedStatement out=c.prepareStatement("INSERT INTO signal_outcomes(signal_id,return_15m,return_30m,return_60m) VALUES(?,?,?,?)")){for(var z:readSignals()){so.setLong(1,z.id);so.setString(2,z.symbol);so.setLong(3,z.candleTs);so.setString(4,z.captured);so.setDouble(5,z.price);so.setString(6,z.signal);so.setInt(7,z.score);so.setString(8,z.phase);so.setDouble(9,z.rsi);so.setDouble(10,z.vwap);so.setDouble(11,z.trend);so.setDouble(12,z.volRatio);so.setDouble(13,z.atrPct);so.setDouble(14,z.spreadPct);so.setString(15,z.marketText);so.setString(16,z.eventText);so.addBatch();out.setLong(1,z.id);if(Double.isNaN(z.r15))out.setNull(2,Types.DOUBLE);else out.setDouble(2,z.r15);if(Double.isNaN(z.r30))out.setNull(3,Types.DOUBLE);else out.setDouble(3,z.r30);if(Double.isNaN(z.r60))out.setNull(4,Types.DOUBLE);else out.setDouble(4,z.r60);out.addBatch();}so.executeBatch();out.executeBatch();}
+      try(PreparedStatement so=c.prepareStatement("INSERT INTO signal_observations(id,symbol,candle_ts,captured_at,price,final_status,technical_score,session,rsi14,vwap,momentum_5m,relative_volume,atr_pct,spread_pct,market_context,event_context,captured_at_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::timestamptz) ON CONFLICT(id) DO UPDATE SET symbol=EXCLUDED.symbol,candle_ts=EXCLUDED.candle_ts,captured_at=EXCLUDED.captured_at,price=EXCLUDED.price,final_status=EXCLUDED.final_status,technical_score=EXCLUDED.technical_score,session=EXCLUDED.session,rsi14=EXCLUDED.rsi14,vwap=EXCLUDED.vwap,momentum_5m=EXCLUDED.momentum_5m,relative_volume=EXCLUDED.relative_volume,atr_pct=EXCLUDED.atr_pct,spread_pct=EXCLUDED.spread_pct,market_context=EXCLUDED.market_context,event_context=EXCLUDED.event_context,captured_at_ts=EXCLUDED.captured_at_ts"); PreparedStatement out=c.prepareStatement("INSERT INTO signal_outcomes(signal_id,return_15m,return_30m,return_60m) VALUES(?,?,?,?) ON CONFLICT(signal_id) DO UPDATE SET return_15m=COALESCE(signal_outcomes.return_15m,EXCLUDED.return_15m),return_30m=COALESCE(signal_outcomes.return_30m,EXCLUDED.return_30m),return_60m=COALESCE(signal_outcomes.return_60m,EXCLUDED.return_60m)")){for(var z:readSignals()){so.setLong(1,z.id);so.setString(2,z.symbol);so.setLong(3,z.candleTs);so.setString(4,z.captured);so.setDouble(5,z.price);so.setString(6,z.signal);so.setInt(7,z.score);so.setString(8,z.phase);so.setDouble(9,z.rsi);so.setDouble(10,z.vwap);so.setDouble(11,z.trend);so.setDouble(12,z.volRatio);so.setDouble(13,z.atrPct);so.setDouble(14,z.spreadPct);so.setString(15,z.marketText);so.setString(16,z.eventText);so.setString(17,z.captured==null||z.captured.isBlank()?null:z.captured+"Z");so.addBatch();out.setLong(1,z.id);if(Double.isNaN(z.r15))out.setNull(2,Types.DOUBLE);else out.setDouble(2,z.r15);if(Double.isNaN(z.r30))out.setNull(3,Types.DOUBLE);else out.setDouble(3,z.r30);if(Double.isNaN(z.r60))out.setNull(4,Types.DOUBLE);else out.setDouble(4,z.r60);out.addBatch();}so.executeBatch();out.executeBatch();}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO market_events(id,event_time,type,impact,scope,title,created_at) VALUES(?,?,?,?,?,?,?)")){for(var z:readEvents()){ps.setLong(1,z.id);ps.setString(2,z.when);ps.setString(3,z.type);ps.setString(4,z.impact);ps.setString(5,z.scope);ps.setString(6,z.title);ps.setString(7,z.created);ps.addBatch();}ps.executeBatch();}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO research_notes(id,title,body,tag,created_at) VALUES(?,?,?,?,?)")){for(var z:readNotes()){ps.setLong(1,z.id);ps.setString(2,z.title);ps.setString(3,z.body);ps.setString(4,z.tag);ps.setString(5,z.created);ps.addBatch();}ps.executeBatch();}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO prediction_calls(id,symbol,direction,baseline,threshold,due_date,note,status,resolved_price,move_pct,created_at,resolved_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")){for(var z:readCalls()){ps.setLong(1,z.id);ps.setString(2,z.symbol);ps.setString(3,z.direction);ps.setDouble(4,z.baseline);ps.setDouble(5,z.threshold);ps.setString(6,z.due);ps.setString(7,z.note);ps.setString(8,z.status);ps.setDouble(9,z.resolved);ps.setDouble(10,z.move);ps.setString(11,z.created);ps.setString(12,z.resolvedAt);ps.addBatch();}ps.executeBatch();}
       c.commit();
     }catch(Exception e){throw new IOException("Native PostgreSQL sync failed: "+e.getMessage(),e);}
+  }
+
+
+  record PricePoint(long ts,double close) {}
+  static void startOutcomeWorker(){
+    if(!DATABASE_READY)return;
+    var scheduler=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"marketledger-outcomes");t.setDaemon(true);return t;});
+    scheduler.scheduleWithFixedDelay(()->{try{measurePendingOutcomes();}catch(Throwable e){System.err.println("Outcome worker warning: "+e.getMessage());}},20,300,TimeUnit.SECONDS);
+    System.out.println("Outcome engine: scheduled every 5 minutes (historical candle backfill enabled)");
+  }
+  static void measurePendingOutcomes() throws Exception {
+    if(!DATABASE_READY)return;
+    record Pending(long id,String symbol,long ts,double price,String session){}
+    var pending=new ArrayList<Pending>();
+    try(Connection c=db(); PreparedStatement ps=c.prepareStatement("SELECT o.id,o.symbol,o.candle_ts,o.price,o.session FROM signal_observations o JOIN signal_outcomes x ON x.signal_id=o.id WHERE x.return_15m IS NULL OR x.return_30m IS NULL OR x.return_60m IS NULL OR x.max_gain_60m IS NULL ORDER BY o.candle_ts DESC LIMIT 250"); ResultSet rs=ps.executeQuery()){
+      while(rs.next())pending.add(new Pending(rs.getLong(1),rs.getString(2),rs.getLong(3),rs.getDouble(4),rs.getString(5)));
+    }
+    Map<String,List<PricePoint>> cache=new HashMap<>(); int updated=0;
+    for(var p:pending){
+      List<PricePoint> pts=cache.computeIfAbsent(p.symbol(),k->{try{return historicalPoints(k);}catch(Exception e){return List.of();}}); if(pts.isEmpty())continue;
+      Double[] px=new Double[3]; Instant[] at=new Instant[3]; int[] mins={15,30,60};
+      for(int i=0;i<3;i++){long target=p.ts()+mins[i]*60_000L; PricePoint q=nearestPoint(pts,target,p.session()); if(q!=null){px[i]=q.close();at[i]=Instant.ofEpochMilli(q.ts());}}
+      double maxGain=Double.NaN,maxDraw=Double.NaN;
+      for(var q:pts) if(q.ts()>p.ts()&&q.ts()<=p.ts()+60*60_000L&&sameSession(p.session(),q.ts())){double r=(q.close()/p.price()-1)*100;maxGain=Double.isNaN(maxGain)?r:Math.max(maxGain,r);maxDraw=Double.isNaN(maxDraw)?r:Math.min(maxDraw,r);}
+      if(px[0]==null&&px[1]==null&&px[2]==null&&Double.isNaN(maxGain))continue;
+      try(Connection c=db(); PreparedStatement u=c.prepareStatement("UPDATE signal_outcomes SET price_15m=COALESCE(price_15m,?),return_15m=COALESCE(return_15m,?),measured_15m_at=COALESCE(measured_15m_at,?),price_30m=COALESCE(price_30m,?),return_30m=COALESCE(return_30m,?),measured_30m_at=COALESCE(measured_30m_at,?),price_60m=COALESCE(price_60m,?),return_60m=COALESCE(return_60m,?),measured_60m_at=COALESCE(measured_60m_at,?),max_gain_60m=COALESCE(max_gain_60m,?),max_drawdown_60m=COALESCE(max_drawdown_60m,?),updated_at=NOW() WHERE signal_id=?")){
+        int n=1; for(int i=0;i<3;i++){if(px[i]==null){u.setNull(n++,Types.DOUBLE);u.setNull(n++,Types.DOUBLE);u.setNull(n++,Types.TIMESTAMP_WITH_TIMEZONE);}else{u.setDouble(n++,px[i]);u.setDouble(n++,(px[i]/p.price()-1)*100);u.setObject(n++,at[i]);}} if(Double.isNaN(maxGain))u.setNull(n++,Types.DOUBLE);else u.setDouble(n++,maxGain); if(Double.isNaN(maxDraw))u.setNull(n++,Types.DOUBLE);else u.setDouble(n++,maxDraw);u.setLong(n,p.id());updated+=u.executeUpdate();}
+    }
+    if(updated>0)System.out.println("Outcome engine: updated "+updated+" signal outcome rows");
+  }
+  static PricePoint nearestPoint(List<PricePoint> pts,long target,String session){PricePoint best=null;long delta=Long.MAX_VALUE;for(var q:pts){long d=q.ts()-target;if(d<0||d>8*60_000L||!sameSession(session,q.ts()))continue;if(d<delta){best=q;delta=d;}}return best;}
+  static boolean sameSession(String expected,long epochMs){String s=sessionForEpoch(epochMs); if(expected==null)return true; expected=expected.toUpperCase(Locale.ROOT); if(expected.equals("CLOSED"))return false; if(expected.equals("DISCOVERY")||expected.equals("CONFIRM")||expected.equals("AFTERNOON")||expected.equals("CLOSE")||expected.equals("REGULAR"))return s.equals("REGULAR"); return expected.equals(s);}
+  static String sessionForEpoch(long ms){ZonedDateTime z=Instant.ofEpochMilli(ms).atZone(ZoneId.of("America/New_York"));int m=z.getHour()*60+z.getMinute();DayOfWeek d=z.getDayOfWeek();if(d==DayOfWeek.SATURDAY)return"CLOSED";if(d==DayOfWeek.SUNDAY)return m>=1200?"OVERNIGHT":"CLOSED";if(d==DayOfWeek.FRIDAY&&m>=1200)return"CLOSED";if(m<240||m>=1200)return"OVERNIGHT";if(m<570)return"PRE";if(m<960)return"REGULAR";return"POST";}
+  static List<PricePoint> historicalPoints(String sym)throws Exception{
+    String u="https://query1.finance.yahoo.com/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=5d&interval=5m&includePrePost=true&events=div%2Csplits";
+    HttpClient c=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(12)).header("User-Agent","Mozilla/5.0 MarketLedger/2.6").GET().build(),HttpResponse.BodyHandlers.ofString());if(r.statusCode()!=200)return List.of();String b=r.body();
+    var tm=java.util.regex.Pattern.compile("\\\"timestamp\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);var cm=java.util.regex.Pattern.compile("\\\"close\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);if(!tm.find()||!cm.find())return List.of();String[] ts=tm.group(1).split(","),cs=cm.group(1).split(",");var out=new ArrayList<PricePoint>();for(int i=0;i<Math.min(ts.length,cs.length);i++){try{String cv=cs[i].trim();if(cv.equals("null"))continue;out.add(new PricePoint(Long.parseLong(ts[i].trim())*1000L,Double.parseDouble(cv)));}catch(Exception ignored){}}return out;
   }
 
   static void migrateLegacyData() throws IOException {
