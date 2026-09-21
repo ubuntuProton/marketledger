@@ -1,5 +1,2 @@
-# MarketLedger Pro Cloud V5B — 24/5 Market Awareness
-
-Adds live extended-hours/overnight price display, regular-close comparison, Sunday overnight recognition, and Alpaca candle fallback for symbols missing Yahoo candles. Core regular-session scoring remains unchanged.
-
-# marketledger
+# MarketLedger Pro V5K.4
+Signal Audit & Reason Semantics release. This is an explainability/audit patch only; trading thresholds are unchanged.
