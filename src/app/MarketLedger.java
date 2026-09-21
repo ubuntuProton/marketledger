@@ -1019,9 +1019,32 @@ public class MarketLedger {
     boolean quoteFresh=available&&quoteAgeMin>=0&&quoteAgeMin<=freshLimit;
     boolean barFresh=available&&barAgeMin>=0&&barAgeMin<=freshLimit;
     boolean fresh=quoteFresh||barFresh;
+    String routedProvider="ALPACA",routedFeed=feed;
+    // V5H.3: IEX latest can be Friday-stale during Monday PRE/extended hours.
+    // If so, route the price-only live layer to Yahoo includePrePost candles.
+    // Bid/ask liquidity remains unavailable unless Alpaca itself is fresh.
+    if(!fresh&&!phase.equals("REGULAR")){
+      try{
+        List<PricePoint> yp=historicalPoints(sym);
+        if(!yp.isEmpty()){
+          PricePoint y=yp.get(yp.size()-1);
+          long yAge=Math.max(0,(nowMs-y.ts())/60000);
+          System.out.println("Market data route: "+sym+" phase="+phase+" alpacaFeed="+feed+" yahooAgeMin="+yAge+" action="+(yAge<=20?"YAHOO_EXTENDED":"REJECT_STALE_YAHOO"));
+          if(yAge<=20){
+            ld=y.close(); last=Double.toString(ld); barTs=Instant.ofEpochMilli(y.ts()).toString();
+            barAgeMin=yAge; barFresh=true; fresh=true; available=true;
+            routedProvider="YAHOO_EXTENDED"; routedFeed="yahoo-includePrePost";
+            // Do not reuse stale Alpaca spread/size as current liquidity.
+            bid="null";ask="null";bs="null";as="null";bd=Double.NaN;ad=Double.NaN;
+          }
+        }else System.out.println("Market data route: "+sym+" phase="+phase+" action=YAHOO_EMPTY");
+      }catch(Exception ye){
+        System.out.println("Market data route: "+sym+" phase="+phase+" action=YAHOO_ERROR type="+ye.getClass().getSimpleName()+" message="+String.valueOf(ye.getMessage()));
+      }
+    }
     String diagResult=fresh?"FRESH":available?"STALE":"EMPTY";
     System.out.println("Market data diag: "+sym+" phase="+phase+" feed="+feed+" quoteHTTP="+qr.statusCode()+" barHTTP="+br.statusCode()+" quoteTs="+(quoteTs.isBlank()?"NONE":quoteTs)+" quoteAgeMin="+quoteAgeMin+" barTs="+(barTs.isBlank()?"NONE":barTs)+" barAgeMin="+barAgeMin+" available="+available+" result="+diagResult);
-    json(x,200,"{\"provider\":\"ALPACA\",\"available\":"+available+",\"fresh\":"+fresh+",\"quoteFresh\":"+quoteFresh+",\"barFresh\":"+barFresh+",\"freshLimitMin\":"+freshLimit+",\"quoteAgeMin\":"+quoteAgeMin+",\"barAgeMin\":"+barAgeMin+",\"feed\":"+q(feed)+",\"phase\":"+q(phase)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+",\"quoteTs\":"+q(quoteTs)+",\"barTs\":"+q(barTs)+"}");
+    json(x,200,"{\"provider\":"+q(routedProvider)+",\"available\":"+available+",\"fresh\":"+fresh+",\"quoteFresh\":"+quoteFresh+",\"barFresh\":"+barFresh+",\"freshLimitMin\":"+freshLimit+",\"quoteAgeMin\":"+quoteAgeMin+",\"barAgeMin\":"+barAgeMin+",\"feed\":"+q(routedFeed)+",\"phase\":"+q(phase)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+",\"quoteTs\":"+q(quoteTs)+",\"barTs\":"+q(barTs)+"}");
   }
   static String marketPhaseServer(){
     ZonedDateTime z=ZonedDateTime.now(ZoneId.of("America/New_York"));int m=z.getHour()*60+z.getMinute();DayOfWeek d=z.getDayOfWeek();
