@@ -1,0 +1,47 @@
+warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+ .gitignore                             |   4 [32m++++[m
+ MarketLedger-Pro-Cloud-iPhone-V2.jar   | Bin [31m56278[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V3.jar   | Bin [31m58403[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V4.jar   | Bin [31m60253[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5.jar   | Bin [31m60580[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5B.jar  | Bin [31m62175[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5C.jar  | Bin [31m64234[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5D.jar  | Bin [31m69073[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5D1.jar | Bin [31m69466[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5D2.jar | Bin [31m69629[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5E.jar  | Bin [31m73238[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5E1.jar | Bin [31m76332[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5E2.jar | Bin [31m77455[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5F.jar  | Bin [31m82169[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5F1.jar | Bin [31m84189[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G.jar  | Bin [31m86136[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G1.jar | Bin [31m86746[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G2.jar | Bin [31m87458[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G3.jar | Bin [31m88717[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G4.jar | Bin [31m89525[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G5.jar | Bin [31m90156[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G6.jar | Bin [31m91073[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5G7.jar | Bin [31m95205[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone-V5H.jar  | Bin [31m96352[m -> [32m0[m bytes
+ MarketLedger-Pro-Cloud-iPhone.jar      | Bin [31m54718[m -> [32m0[m bytes
+ MarketLedger-Pro-iPhonePWA.jar         | Bin [31m52695[m -> [32m0[m bytes
+ PHASE5-INTRADAY-README.txt             |  16 [31m----------------[m
+ PHASE5C-README.txt                     |  13 [31m-------------[m
+ PHASE5D-README.txt                     |  11 [31m-----------[m
+ PHASE5D1-README.txt                    |   7 [31m-------[m
+ PHASE5D2-README.txt                    |  14 [31m--------------[m
+ PHASE5E-README.txt                     |  22 [31m----------------------[m
+ PHASE5E1-README.txt                    |  19 [31m-------------------[m
+ PHASE5E2-README.txt                    |  18 [31m------------------[m
+ PHASE5F-README.txt                     |  18 [31m------------------[m
+ PHASE5F1-README.txt                    |   7 [31m-------[m
+ PHASE5G-README.txt                     |  21 [31m---------------------[m
+ PHASE5G1-README.txt                    |  20 [31m--------------------[m
+ PHASE5G2-README.txt                    |  11 [31m-----------[m
+ PHASE5G3-README.txt                    |  23 [31m-----------------------[m
+ PHASE5G4-README.txt                    |  17 [31m-----------------[m
+ PHASE5G5-README.txt                    |  11 [31m-----------[m
+ PHASE5G6-README.txt                    |  12 [31m------------[m
+ PHASE5G7-README.txt                    |  26 [31m--------------------------[m
+ PHASE5H-README.txt                     |  31 [31m-------------------------------[m
+ 45 files changed, 4 insertions(+), 317 deletions(-)
