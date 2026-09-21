@@ -996,9 +996,18 @@ public class MarketLedger {
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
     Properties p=marketSettings();String provider=p.getProperty("provider","YAHOO");if(!provider.equals("ALPACA")){json(x,200,"{\"provider\":\"YAHOO\",\"available\":false,\"reason\":\"Configure Alpaca for bid/ask and overnight liquidity\"}");return;}
     String phase=marketPhaseServer(),feed=feedForPhase(phase),enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);
-    HttpResponse<String> qr=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/quotes/latest",feed);
-    HttpResponse<String> br=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest",feed);
-    if(qr.statusCode()!=200&&br.statusCode()!=200){json(x,200,"{\"provider\":\"ALPACA\",\"available\":false,\"feed\":"+q(feed)+",\"http\":"+Math.max(qr.statusCode(),br.statusCode())+",\"reason\":\"No latest quote/bar from selected feed\"}");return;}
+    HttpResponse<String> qr,br;
+    try{
+      qr=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/quotes/latest",feed);
+      br=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest",feed);
+    }catch(Exception e){
+      System.out.println("Market data diag: "+sym+" phase="+phase+" feed="+feed+" request=EXCEPTION type="+e.getClass().getSimpleName()+" message="+String.valueOf(e.getMessage()));
+      throw e;
+    }
+    if(qr.statusCode()!=200&&br.statusCode()!=200){
+      System.out.println("Market data diag: "+sym+" phase="+phase+" feed="+feed+" quoteHTTP="+qr.statusCode()+" barHTTP="+br.statusCode()+" result=NO_DATA");
+      json(x,200,"{\"provider\":\"ALPACA\",\"available\":false,\"feed\":"+q(feed)+",\"http\":"+Math.max(qr.statusCode(),br.statusCode())+",\"reason\":\"No latest quote/bar from selected feed\"}");return;
+    }
     String qb=qr.statusCode()==200?qr.body():"",bb=br.statusCode()==200?br.body():"";
     String bid=jsonNum(qb,"bp"),ask=jsonNum(qb,"ap"),bs=jsonNum(qb,"bs"),as=jsonNum(qb,"as"),last=jsonNum(bb,"c"),barVol=jsonNum(bb,"v");
     String quoteTs=jsonStr(qb,"t"),barTs=jsonStr(bb,"t"); double bd=dnum(bid),ad=dnum(ask),ld=dnum(last); if(Double.isNaN(ld)&&!Double.isNaN(bd)&&!Double.isNaN(ad))last=String.format(Locale.US,"%.6f",(bd+ad)/2.0);
@@ -1010,6 +1019,8 @@ public class MarketLedger {
     boolean quoteFresh=available&&quoteAgeMin>=0&&quoteAgeMin<=freshLimit;
     boolean barFresh=available&&barAgeMin>=0&&barAgeMin<=freshLimit;
     boolean fresh=quoteFresh||barFresh;
+    String diagResult=fresh?"FRESH":available?"STALE":"EMPTY";
+    System.out.println("Market data diag: "+sym+" phase="+phase+" feed="+feed+" quoteHTTP="+qr.statusCode()+" barHTTP="+br.statusCode()+" quoteTs="+(quoteTs.isBlank()?"NONE":quoteTs)+" quoteAgeMin="+quoteAgeMin+" barTs="+(barTs.isBlank()?"NONE":barTs)+" barAgeMin="+barAgeMin+" available="+available+" result="+diagResult);
     json(x,200,"{\"provider\":\"ALPACA\",\"available\":"+available+",\"fresh\":"+fresh+",\"quoteFresh\":"+quoteFresh+",\"barFresh\":"+barFresh+",\"freshLimitMin\":"+freshLimit+",\"quoteAgeMin\":"+quoteAgeMin+",\"barAgeMin\":"+barAgeMin+",\"feed\":"+q(feed)+",\"phase\":"+q(phase)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+",\"quoteTs\":"+q(quoteTs)+",\"barTs\":"+q(barTs)+"}");
   }
   static String marketPhaseServer(){

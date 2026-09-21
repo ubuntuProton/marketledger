@@ -3,7 +3,3 @@ data/
 *.log
 .env
 settings.properties
-
-# Generated Java build artifacts
-*.jar
-!MarketLedger-Pro-Cloud-iPhone-V5H1.jar
