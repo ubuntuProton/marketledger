@@ -178,11 +178,21 @@ public class MarketLedger {
 
   record EarningsHit(String symbol,long epoch,boolean estimated,String source) {}
   record ConfirmedEarnings(String symbol,LocalDate date,String timing,String source) {}
+  record EarningsCandidate(String symbol,LocalDate date,String timing,String source,boolean authoritative) {}
+  record VerificationResult(String symbol,String status,LocalDate selectedDate,String timing,String source,String note) {}
+  static volatile Map<String,VerificationResult> LAST_EARNINGS_VERIFICATION=new LinkedHashMap<>();
+
   static final Map<String,ConfirmedEarnings> CONFIRMED_EARNINGS=Map.of(
     "MU",new ConfirmedEarnings("MU",LocalDate.of(2026,9,30),"AMC","Micron Investor Relations")
   );
-  static String earningsConfidence(EarningsHit h){return h.estimated?"ESTIMATED":"CONFIRMED";}
+  static String earningsConfidence(EarningsHit h){
+    var v=LAST_EARNINGS_VERIFICATION.get(h.symbol.toUpperCase(Locale.ROOT));
+    if(v!=null)return v.status;
+    return h.estimated?"ESTIMATED":"CONFIRMED";
+  }
   static String earningsTiming(EarningsHit h){
+    var v=LAST_EARNINGS_VERIFICATION.get(h.symbol.toUpperCase(Locale.ROOT));
+    if(v!=null && v.timing!=null && !v.timing.isBlank())return v.timing;
     ConfirmedEarnings c=CONFIRMED_EARNINGS.get(h.symbol.toUpperCase(Locale.ROOT));
     return c==null?"TBD":c.timing;
   }
@@ -196,6 +206,66 @@ public class MarketLedger {
     if(!h.estimated && days<=1)return "HIGH";
     if(h.estimated && days<=1)return "MEDIUM";
     return "LOW";
+  }
+
+  static Map<String,VerificationResult> reconcileEarnings(List<EarningsHit> hits){
+    Map<String,List<EarningsCandidate>> by=new LinkedHashMap<>();
+    for(var h:hits){
+      LocalDate d=Instant.ofEpochSecond(h.epoch).atZone(ZoneId.of("America/New_York")).toLocalDate();
+      by.computeIfAbsent(h.symbol.toUpperCase(Locale.ROOT),k->new ArrayList<>())
+        .add(new EarningsCandidate(h.symbol.toUpperCase(Locale.ROOT),d,"TBD",h.source,false));
+    }
+    // Company/IR confirmations are injected as highest-authority candidates.
+    for(var ce:CONFIRMED_EARNINGS.values())
+      by.computeIfAbsent(ce.symbol.toUpperCase(Locale.ROOT),k->new ArrayList<>())
+        .add(new EarningsCandidate(ce.symbol.toUpperCase(Locale.ROOT),ce.date,ce.timing,ce.source,true));
+
+    Map<String,VerificationResult> out=new LinkedHashMap<>();
+    for(var en:by.entrySet()){
+      String sym=en.getKey(); var cs=en.getValue();
+      var auth=cs.stream().filter(EarningsCandidate::authoritative).findFirst();
+      if(auth.isPresent()){
+        var a=auth.get();
+        var conflicts=new LinkedHashSet<String>();
+        for(var c:cs)if(!c.authoritative && !c.date.equals(a.date))conflicts.add(c.source+"="+c.date);
+        out.put(sym,new VerificationResult(sym,"CONFIRMED",a.date,a.timing,a.source,
+          conflicts.isEmpty()?"authoritative company/IR date":"authoritative date retained; provider conflict: "+String.join(", ",conflicts)));
+        continue;
+      }
+      Map<LocalDate,Set<String>> votes=new LinkedHashMap<>();
+      for(var c:cs)votes.computeIfAbsent(c.date,k->new LinkedHashSet<>()).add(c.source);
+      LocalDate best=null; Set<String> sources=Set.of();
+      for(var v:votes.entrySet())if(v.getValue().size()>sources.size()){best=v.getKey();sources=v.getValue();}
+      if(best!=null && sources.size()>=2)
+        out.put(sym,new VerificationResult(sym,"CORROBORATED",best,"TBD",String.join(" + ",sources),
+          "two independent calendar sources agree; not company-confirmed"));
+      else if(best!=null)
+        out.put(sym,new VerificationResult(sym,"ESTIMATED",best,"TBD",String.join(" + ",sources),
+          votes.size()>1?"provider dates conflict; estimate retained":"single-source estimate"));
+    }
+    LAST_EARNINGS_VERIFICATION=out;
+    return out;
+  }
+
+  static List<EarningsHit> applyVerification(List<EarningsHit> hits){
+    var vr=reconcileEarnings(hits); var out=new ArrayList<EarningsHit>(); var done=new HashSet<String>();
+    for(var h:hits){
+      String sym=h.symbol.toUpperCase(Locale.ROOT);
+      if(!done.add(sym))continue;
+      var v=vr.get(sym);
+      if(v==null){out.add(h);continue;}
+      long epoch=v.selectedDate.atTime("AMC".equals(v.timing)?java.time.LocalTime.of(16,30):"BMO".equals(v.timing)?java.time.LocalTime.of(8,0):java.time.LocalTime.NOON)
+        .atZone(ZoneId.of("America/New_York")).toEpochSecond();
+      boolean estimated=!"CONFIRMED".equals(v.status);
+      out.add(new EarningsHit(sym,epoch,estimated,v.source));
+    }
+    // Authoritative symbols may not have appeared in a temporarily failed provider result.
+    for(var v:vr.values())if("CONFIRMED".equals(v.status)&&done.add(v.symbol)){
+      long epoch=v.selectedDate.atTime("AMC".equals(v.timing)?java.time.LocalTime.of(16,30):"BMO".equals(v.timing)?java.time.LocalTime.of(8,0):java.time.LocalTime.NOON)
+        .atZone(ZoneId.of("America/New_York")).toEpochSecond();
+      out.add(new EarningsHit(v.symbol,epoch,false,v.source));
+    }
+    return out;
   }
 
   static EarningsHit applyConfirmedEarnings(EarningsHit h){
@@ -234,7 +304,7 @@ public class MarketLedger {
             if(!when.equals(e.when)||!nt.equals(e.title)||!impact.equals(e.impact)){
               events.set(i,new Event(e.id,when,"EARNINGS",impact,sym,nt,e.created)); changed=true;
             }
-          }else if(!title.startsWith("CONFIRMED earnings")&&!title.startsWith("ESTIMATED earnings")){
+          }else if(!title.startsWith("CONFIRMED earnings")&&!title.startsWith("CORROBORATED earnings")&&!title.startsWith("ESTIMATED earnings")){
             String src=title.contains("Xoomar")?"Xoomar/SEC":title.contains("Alpha Vantage")?"Alpha Vantage":"Legacy calendar";
             String nt="ESTIMATED earnings • "+sym+" • timing=TBD • source="+src+" • auto-synced";
             events.set(i,new Event(e.id,e.when,"EARNINGS","LOW",sym,nt,e.created)); changed=true;
@@ -261,12 +331,23 @@ public class MarketLedger {
   static String diagJson(ProviderDiag d){
     return "{\"provider\":\""+esc(d.provider)+"\",\"http\":"+d.http+",\"contentType\":\""+esc(d.contentType)+"\",\"header\":\""+esc(d.header)+"\",\"rows\":"+d.rows+",\"parsed\":"+d.parsed+",\"matches\":"+d.matches+",\"note\":\""+esc(d.note)+"\"}";
   }
+  static void earningsVerificationEndpoint(HttpExchange x)throws Exception{
+    StringBuilder b=new StringBuilder("[");boolean first=true;
+    for(var v:LAST_EARNINGS_VERIFICATION.values()){
+      if(!first)b.append(',');first=false;
+      b.append("{\"symbol\":\"").append(esc(v.symbol)).append("\",\"status\":\"").append(esc(v.status))
+       .append("\",\"date\":\"").append(v.selectedDate==null?"":v.selectedDate).append("\",\"timing\":\"").append(esc(v.timing))
+       .append("\",\"source\":\"").append(esc(v.source)).append("\",\"note\":\"").append(esc(v.note)).append("\"}");
+    }
+    b.append(']');json(x,200,b.toString());
+  }
+
   static void earningsMetaEndpoint(HttpExchange x)throws Exception{
     StringBuilder b=new StringBuilder("["); boolean first=true;
     for(var e:readEvents()){
       if(!"EARNINGS".equalsIgnoreCase(e.type))continue;
       String title=e.title==null?"":e.title;
-      String confidence=title.startsWith("CONFIRMED earnings")?"CONFIRMED":title.startsWith("ESTIMATED earnings")?"ESTIMATED":"CACHED";
+      String confidence=title.startsWith("CONFIRMED earnings")?"CONFIRMED":title.startsWith("CORROBORATED earnings")?"CORROBORATED":title.startsWith("ESTIMATED earnings")?"ESTIMATED":"CACHED";
       String timing="TBD",source="";
       var tm=java.util.regex.Pattern.compile("timing=([^•]+)").matcher(title); if(tm.find())timing=tm.group(1).trim();
       var sm=java.util.regex.Pattern.compile("source=([^•]+)").matcher(title); if(sm.find())source=sm.group(1).trim();
@@ -448,9 +529,7 @@ public class MarketLedger {
     }
  
     {
-      var verified=new ArrayList<EarningsHit>();
-      for(var h:hits)verified.add(applyConfirmedEarnings(h));
-      hits=verified;
+      hits=new ArrayList<>(applyVerification(hits));
     }
 
     int changed=0;
@@ -778,6 +857,7 @@ public class MarketLedger {
       if(p.equals("/api/context/corporate/sync") && m.equals("POST")) { syncCorporateEndpoint(x); return; }
       if(p.equals("/api/context/corporate/diagnostics") && m.equals("GET")) { corporateDiagnosticsEndpoint(x); return; }
       if(p.equals("/api/context/earnings/meta") && m.equals("GET")) { earningsMetaEndpoint(x); return; }
+      if(p.equals("/api/context/earnings/verification") && m.equals("GET")) { earningsVerificationEndpoint(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("GET")) { marketSettingsGet(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
