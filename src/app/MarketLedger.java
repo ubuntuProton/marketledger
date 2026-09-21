@@ -1003,7 +1003,14 @@ public class MarketLedger {
     String bid=jsonNum(qb,"bp"),ask=jsonNum(qb,"ap"),bs=jsonNum(qb,"bs"),as=jsonNum(qb,"as"),last=jsonNum(bb,"c"),barVol=jsonNum(bb,"v");
     String quoteTs=jsonStr(qb,"t"),barTs=jsonStr(bb,"t"); double bd=dnum(bid),ad=dnum(ask),ld=dnum(last); if(Double.isNaN(ld)&&!Double.isNaN(bd)&&!Double.isNaN(ad))last=String.format(Locale.US,"%.6f",(bd+ad)/2.0);
     boolean available=!Double.isNaN(dnum(last))||(!Double.isNaN(bd)&&!Double.isNaN(ad));
-    json(x,200,"{\"provider\":\"ALPACA\",\"available\":"+available+",\"feed\":"+q(feed)+",\"phase\":"+q(phase)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+",\"quoteTs\":"+q(quoteTs)+",\"barTs\":"+q(barTs)+"}");
+    long nowMs=System.currentTimeMillis(),quoteAgeMin=-1,barAgeMin=-1;
+    try{if(!quoteTs.isBlank())quoteAgeMin=Math.max(0,(nowMs-Instant.parse(quoteTs).toEpochMilli())/60000);}catch(Exception ignored){}
+    try{if(!barTs.isBlank())barAgeMin=Math.max(0,(nowMs-Instant.parse(barTs).toEpochMilli())/60000);}catch(Exception ignored){}
+    long freshLimit=phase.equals("REGULAR")?12:20;
+    boolean quoteFresh=available&&quoteAgeMin>=0&&quoteAgeMin<=freshLimit;
+    boolean barFresh=available&&barAgeMin>=0&&barAgeMin<=freshLimit;
+    boolean fresh=quoteFresh||barFresh;
+    json(x,200,"{\"provider\":\"ALPACA\",\"available\":"+available+",\"fresh\":"+fresh+",\"quoteFresh\":"+quoteFresh+",\"barFresh\":"+barFresh+",\"freshLimitMin\":"+freshLimit+",\"quoteAgeMin\":"+quoteAgeMin+",\"barAgeMin\":"+barAgeMin+",\"feed\":"+q(feed)+",\"phase\":"+q(phase)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+",\"quoteTs\":"+q(quoteTs)+",\"barTs\":"+q(barTs)+"}");
   }
   static String marketPhaseServer(){
     ZonedDateTime z=ZonedDateTime.now(ZoneId.of("America/New_York"));int m=z.getHour()*60+z.getMinute();DayOfWeek d=z.getDayOfWeek();
