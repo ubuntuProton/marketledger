@@ -179,6 +179,9 @@ public class MarketLedger {
   record EarningsHit(String symbol,long epoch,boolean estimated,String source) {}
   record EarningsSyncResult(int checked,int found,int changed,int failed,List<String> failures) {}
   record IpoHit(String symbol,String name,LocalDate date,String priceRange,String source) {}
+  record ProviderDiag(String provider,int http,String contentType,String header,int rows,int parsed,int matches,String note) {}
+  static volatile ProviderDiag LAST_EARNINGS_DIAG=new ProviderDiag("none",0,"","",0,0,0,"not synced");
+  static volatile ProviderDiag LAST_IPO_DIAG=new ProviderDiag("none",0,"","",0,0,0,"not synced");
   record CorporateSyncResult(EarningsSyncResult earnings,int ipoFound,int ipoChanged,int ipoFailed,List<String> ipoFailures) {}
 
   static void startCorporateCalendarWorker(){
@@ -191,6 +194,13 @@ public class MarketLedger {
       }catch(Throwable e){System.err.println("Corporate calendar warning: "+e.getMessage());}
     },45,21600,TimeUnit.SECONDS);
     System.out.println("Corporate calendar: scheduled every 6 hours");
+  }
+
+  static String diagJson(ProviderDiag d){
+    return "{\"provider\":\""+esc(d.provider)+"\",\"http\":"+d.http+",\"contentType\":\""+esc(d.contentType)+"\",\"header\":\""+esc(d.header)+"\",\"rows\":"+d.rows+",\"parsed\":"+d.parsed+",\"matches\":"+d.matches+",\"note\":\""+esc(d.note)+"\"}";
+  }
+  static void corporateDiagnosticsEndpoint(HttpExchange x)throws Exception{
+    json(x,200,"{\"earnings\":"+diagJson(LAST_EARNINGS_DIAG)+",\"ipos\":"+diagJson(LAST_IPO_DIAG)+"}");
   }
 
   static void syncCorporateEndpoint(HttpExchange x)throws Exception{
@@ -242,25 +252,27 @@ public class MarketLedger {
 
   static List<IpoHit> fetchAlphaVantageIpos(String key)throws Exception{
     String u="https://www.alphavantage.co/query?function=IPO_CALENDAR&apikey="+URLEncoder.encode(key,StandardCharsets.UTF_8);
-    String body=fetchAlphaCsv(u,"IPO_CALENDAR");
-    String[] lines=body.split("\\R");
-    if(lines.length<2)return List.of();
-    String[] hdr=parseCsvLine(lines[0]);
-    int si=col(hdr,"symbol"), ni=col(hdr,"name"), di=col(hdr,"ipoDate","ipo_date","date"),
-        lo=col(hdr,"priceRangeLow","price_range_low"), hi=col(hdr,"priceRangeHigh","price_range_high");
-    if(di<0)throw new IOException("CSV missing IPO date column; header="+lines[0]);
-    var out=new ArrayList<IpoHit>();
+    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
+    HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(20)).header("User-Agent","MarketLedger/3.1").GET().build(),HttpResponse.BodyHandlers.ofString());
+    String body=r.body()==null?"":r.body().trim(), ct=r.headers().firstValue("content-type").orElse("");
+    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
+    if(body.isBlank())throw new IOException("empty response");
+    if(body.startsWith("{"))throw new IOException("provider notice: "+body.replaceAll("\\s+"," ").substring(0,Math.min(180,body.length())));
+    String[] lines=body.split("\\R"); String header=lines.length>0?lines[0]:"";
+    if(lines.length<1||!header.contains(","))throw new IOException("unexpected non-CSV response");
+    String[] hdr=parseCsvLine(header); int si=col(hdr,"symbol"),ni=col(hdr,"name"),di=col(hdr,"ipoDate","ipo_date","date"),lo=col(hdr,"priceRangeLow","price_range_low"),hi=col(hdr,"priceRangeHigh","price_range_high");
+    if(di<0){LAST_IPO_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),0,0,"missing date column");throw new IOException("CSV missing IPO date column; header="+header);}
+    var out=new ArrayList<IpoHit>(); int parsed=0;
     for(int i=1;i<lines.length;i++){
       String[] f=parseCsvLine(lines[i]); if(f.length<=di)continue;
       try{
-        LocalDate d=LocalDate.parse(f[di].trim());
-        String sym=si>=0&&si<f.length?f[si].trim():"";
-        String name=ni>=0&&ni<f.length?f[ni].trim():sym;
-        String range="";
+        LocalDate d=LocalDate.parse(f[di].trim()); parsed++;
+        String sym=si>=0&&si<f.length?f[si].trim():"", name=ni>=0&&ni<f.length?f[ni].trim():sym, range="";
         if(lo>=0&&hi>=0&&lo<f.length&&hi<f.length&&!f[lo].isBlank()&&!f[hi].isBlank())range="$"+f[lo].trim()+"–$"+f[hi].trim();
         out.add(new IpoHit(sym,name,d,range,"Alpha Vantage"));
       }catch(Exception ignored){}
     }
+    LAST_IPO_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),parsed,out.size(),"valid CSV");
     return out;
   }
 
@@ -314,17 +326,19 @@ public class MarketLedger {
     var failures=new ArrayList<String>();
     var hits=new ArrayList<EarningsHit>();
     String primary="none";
+    boolean primarySucceeded=false;
 
     String avKey=System.getenv("ALPHA_VANTAGE_API_KEY");
     if(avKey!=null&&!avKey.isBlank()){
       try{
         hits.addAll(fetchAlphaVantageCalendar(avKey,stocks));
-        primary="Alpha Vantage";
+        primary="Alpha Vantage"; primarySucceeded=true;
       }catch(Exception e){failures.add("Alpha Vantage: "+e.getMessage());}
     }else failures.add("Alpha Vantage: ALPHA_VANTAGE_API_KEY not configured");
 
-    // Yahoo is fallback only. Never discard cached earnings if it is rate-limited.
-    if(hits.isEmpty()){
+    // A valid calendar with zero watchlist matches is SUCCESS.
+    // Yahoo is used only if the primary provider request/parsing actually failed.
+    if(!primarySucceeded){
       try{
         YahooSession ys=openYahooSession();
         for(var st:stocks){
@@ -368,21 +382,27 @@ public class MarketLedger {
   static List<EarningsHit> fetchAlphaVantageCalendar(String key,List<Stock> stocks)throws Exception{
     var wanted=new HashSet<String>(); for(var st:stocks)wanted.add(st.symbol.toUpperCase(Locale.ROOT));
     String u="https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey="+URLEncoder.encode(key,StandardCharsets.UTF_8);
-    String body=fetchAlphaCsv(u,"EARNINGS_CALENDAR");
-    String[] lines=body.split("\\R"); if(lines.length<2)return List.of();
-    String[] hdr=parseCsvLine(lines[0]);
-    int si=col(hdr,"symbol"), di=col(hdr,"reportDate","report_date","date");
-    if(si<0||di<0)throw new IOException("CSV missing symbol/reportDate; header="+lines[0]);
-    var out=new ArrayList<EarningsHit>();
+    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
+    HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(20)).header("User-Agent","MarketLedger/3.1").GET().build(),HttpResponse.BodyHandlers.ofString());
+    String body=r.body()==null?"":r.body().trim(), ct=r.headers().firstValue("content-type").orElse("");
+    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
+    if(body.isBlank())throw new IOException("empty response");
+    if(body.startsWith("{"))throw new IOException("provider notice: "+body.replaceAll("\\s+"," ").substring(0,Math.min(180,body.length())));
+    String[] lines=body.split("\\R"); String header=lines.length>0?lines[0]:"";
+    if(lines.length<1||!header.contains(","))throw new IOException("unexpected non-CSV response");
+    String[] hdr=parseCsvLine(header); int si=col(hdr,"symbol"), di=col(hdr,"reportDate","report_date","date");
+    if(si<0||di<0){LAST_EARNINGS_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),0,0,"missing columns");throw new IOException("CSV missing symbol/reportDate; header="+header);}
+    var out=new ArrayList<EarningsHit>(); int parsed=0;
     for(int i=1;i<lines.length;i++){
       String[] f=parseCsvLine(lines[i]); if(f.length<=Math.max(si,di))continue;
-      String sym=f[si].trim().toUpperCase(Locale.ROOT); if(!wanted.contains(sym))continue;
       try{
-        LocalDate d=LocalDate.parse(f[di].trim());
+        LocalDate d=LocalDate.parse(f[di].trim()); parsed++;
+        String sym=f[si].trim().toUpperCase(Locale.ROOT); if(!wanted.contains(sym))continue;
         long epoch=d.atTime(12,0).atZone(ZoneId.of("America/New_York")).toEpochSecond();
         out.add(new EarningsHit(sym,epoch,true,"Alpha Vantage"));
       }catch(Exception ignored){}
     }
+    LAST_EARNINGS_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),parsed,out.size(),"valid CSV");
     return out;
   }
 
@@ -513,6 +533,7 @@ public class MarketLedger {
       if(p.equals("/api/context/schwab/sync") && m.equals("POST")) { syncSchwab(x); return; }
       if(p.equals("/api/context/earnings/sync") && m.equals("POST")) { syncEarningsEndpoint(x); return; }
       if(p.equals("/api/context/corporate/sync") && m.equals("POST")) { syncCorporateEndpoint(x); return; }
+      if(p.equals("/api/context/corporate/diagnostics") && m.equals("GET")) { corporateDiagnosticsEndpoint(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("GET")) { marketSettingsGet(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
