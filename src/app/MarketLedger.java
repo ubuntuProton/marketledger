@@ -225,9 +225,12 @@ public class MarketLedger {
     try{ipos.addAll(fetchNasdaqIpos());ipoPrimarySucceeded=true;}
     catch(Exception e){ipoFailures.add("Nasdaq IPO: "+e.getMessage());}
     String key=System.getenv("ALPHA_VANTAGE_API_KEY");
-    if(!ipoPrimarySucceeded && key!=null&&!key.isBlank()){
-      try{ipos.addAll(fetchAlphaVantageIpos(key));}
-      catch(Exception e){ipoFailures.add("Alpha Vantage IPO fallback: "+e.getMessage());}
+    if(key!=null&&!key.isBlank()){
+      try{
+        var av=fetchAlphaVantageIpos(key);
+        var have=new HashSet<String>();for(var h:ipos)have.add((h.symbol+"|"+h.date).toLowerCase(Locale.ROOT));
+        for(var h:av)if(have.add((h.symbol+"|"+h.date).toLowerCase(Locale.ROOT)))ipos.add(h);
+      }catch(Exception e){ipoFailures.add("Alpha Vantage IPO merge: "+e.getMessage());}
     }
 
     synchronized(LOCK){
@@ -329,20 +332,25 @@ public class MarketLedger {
     var failures=new ArrayList<String>();
     var hits=new ArrayList<EarningsHit>();
     String primary="none";
-    boolean primarySucceeded=false;
+    boolean anyProviderSucceeded=false;
 
     try{
       hits.addAll(fetchXoomarEarnings(stocks));
-      primary="Xoomar/SEC"; primarySucceeded=true;
+      primary="Xoomar/SEC"; anyProviderSucceeded=true;
     }catch(Exception e){failures.add("Xoomar: "+e.getMessage());}
 
     String avKey=System.getenv("ALPHA_VANTAGE_API_KEY");
-    if(!primarySucceeded && avKey!=null&&!avKey.isBlank()){
-      try{hits.addAll(fetchAlphaVantageCalendar(avKey,stocks));primary="Alpha Vantage fallback";primarySucceeded=true;}
-      catch(Exception e){failures.add("Alpha Vantage fallback: "+e.getMessage());}
+    if(avKey!=null&&!avKey.isBlank()){
+      try{
+        var avHits=fetchAlphaVantageCalendar(avKey,stocks);
+        // Merge without replacing Xoomar dates; Xoomar/SEC remains preferred when both have the ticker.
+        var have=new HashSet<String>();for(var h:hits)have.add(h.symbol.toUpperCase(Locale.ROOT));
+        for(var h:avHits)if(have.add(h.symbol.toUpperCase(Locale.ROOT)))hits.add(h);
+        anyProviderSucceeded=true;
+      }catch(Exception e){failures.add("Alpha Vantage merge: "+e.getMessage());}
     }
 
-    if(!primarySucceeded){
+    if(!anyProviderSucceeded){
       try{
         YahooSession ys=openYahooSession();
         for(var st:stocks){
@@ -401,26 +409,36 @@ public class MarketLedger {
   }
 
   static List<EarningsHit> fetchXoomarEarnings(List<Stock> stocks)throws Exception{
-    var wanted=new HashSet<String>();for(var st:stocks)wanted.add(st.symbol.toUpperCase(Locale.ROOT));
-    LocalDate from=LocalDate.now(ZoneId.of("America/New_York")),to=from.plusDays(60);
-    String u="https://xoomar.com/api/markets/earnings?from="+from+"&to="+to+"&limit=2000";
     HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
-    HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(20))
-      .header("User-Agent","MarketLedger/3.2").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());
-    String body=r.body()==null?"":r.body(),ct=r.headers().firstValue("content-type").orElse("");
-    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
-    var objs=jsonObjects(body);var out=new ArrayList<EarningsHit>();int parsed=0;
-    for(String o:objs){
-      String ticker=jsonString(o,"ticker"),date=jsonString(o,"date"),status=jsonString(o,"status");
-      if(ticker.isBlank()||date.isBlank())continue;
+    var out=new ArrayList<EarningsHit>(); int providerRows=0,parsed=0,ok=0,notFound=0,failed=0;
+    ZoneId ny=ZoneId.of("America/New_York"); LocalDate today=LocalDate.now(ny),limit=today.plusDays(120);
+    for(var st:stocks){
+      String sym=st.symbol.toUpperCase(Locale.ROOT);
+      String u="https://xoomar.com/api/markets/earnings/"+URLEncoder.encode(sym,StandardCharsets.UTF_8);
       try{
-        LocalDate d=LocalDate.parse(date.substring(0,10));parsed++;
-        String sym=ticker.toUpperCase(Locale.ROOT);if(!wanted.contains(sym))continue;
-        long epoch=d.atTime(12,0).atZone(ZoneId.of("America/New_York")).toEpochSecond();
-        out.add(new EarningsHit(sym,epoch,!status.equalsIgnoreCase("reported"),"Xoomar/SEC"));
-      }catch(Exception ignored){}
+        HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(12))
+          .header("User-Agent","MarketLedger/3.3").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());
+        if(r.statusCode()==404){notFound++;continue;}
+        if(r.statusCode()!=200){failed++;continue;}
+        ok++; String body=r.body()==null?"":r.body();
+        // Per-ticker response contains data.next with the next estimate.
+        int ni=body.indexOf("\"next\"");
+        if(ni<0)continue;
+        String tail=body.substring(ni,Math.min(body.length(),ni+1800));
+        String date=jsonString(tail,"date"),status=jsonString(tail,"status");
+        if(date.isBlank())continue;
+        providerRows++;
+        try{
+          LocalDate d=LocalDate.parse(date.substring(0,10));parsed++;
+          if(d.isBefore(today)||d.isAfter(limit))continue;
+          long epoch=d.atTime(12,0).atZone(ny).toEpochSecond();
+          out.add(new EarningsHit(sym,epoch,!status.equalsIgnoreCase("reported"),"Xoomar/SEC"));
+        }catch(Exception ignored){}
+      }catch(Exception e){failed++;}
     }
-    LAST_EARNINGS_DIAG=new ProviderDiag("Xoomar/SEC",r.statusCode(),ct,"JSON: date,ticker,company,status",parsed,parsed,out.size(),"valid JSON");
+    LAST_EARNINGS_DIAG=new ProviderDiag("Xoomar/SEC per-ticker",200,"application/json",
+      "data.next: date,status,basis",providerRows,parsed,out.size(),
+      "ticker requests ok="+ok+", 404="+notFound+", failed="+failed);
     return out;
   }
 
@@ -433,30 +451,46 @@ public class MarketLedger {
       String u="https://api.nasdaq.com/api/ipo/calendar?date="+month;
       HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(20))
         .header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123 Safari/537.36")
-        .header("Accept","application/json, text/plain, */*").header("Referer","https://www.nasdaq.com/market-activity/ipos").GET().build(),HttpResponse.BodyHandlers.ofString());
+        .header("Accept","application/json, text/plain, */*").header("Accept-Language","en-US,en;q=0.9")
+        .header("Referer","https://www.nasdaq.com/market-activity/ipos").GET().build(),HttpResponse.BodyHandlers.ofString());
       http=r.statusCode();ct=r.headers().firstValue("content-type").orElse(ct);
       if(http!=200)throw new IOException("HTTP "+http+" for "+month);
       String body=r.body()==null?"":r.body();
-      for(String o:jsonObjects(body)){
+
+      // Nasdaq groups the calendar into priced/upcoming/filings/withdrawn.
+      // Restrict parsing to the upcoming section so metadata objects are not mistaken for IPO rows.
+      int up=body.indexOf("\"upcoming\"");
+      if(up<0)continue;
+      int next=body.length();
+      for(String section:new String[]{"\"priced\"","\"filings\"","\"withdrawn\""}) {
+        int p=body.indexOf(section,up+10); if(p>up&&p<next)next=p;
+      }
+      String upcoming=body.substring(up,next);
+      for(String o:jsonObjects(upcoming)){
+        String sym=jsonString(o,"proposedTickerSymbol");
+        String name=jsonString(o,"companyName");
         String date=jsonString(o,"expectedPriceDate");
-        if(date.isBlank())continue;
+        if(date.isBlank())date=jsonString(o,"expectedDate");
+        if(date.isBlank()||name.isBlank())continue;
         rows++;
         try{
           LocalDate d;
-          try{d=LocalDate.parse(date);}
+          try{d=LocalDate.parse(date.substring(0,10));}
           catch(Exception x){d=LocalDate.parse(date,java.time.format.DateTimeFormatter.ofPattern("M/d/yyyy"));}
-          String sym=jsonString(o,"proposedTickerSymbol");
-          String name=jsonString(o,"companyName");
           String price=jsonString(o,"proposedSharePrice");
-          if(name.isBlank())continue;
-          parsed++;all.add(new IpoHit(sym,name,d,price,"Nasdaq IPO Calendar"));
+          if(price.isBlank()){
+            String lo=jsonString(o,"priceRangeLow"),hi=jsonString(o,"priceRangeHigh");
+            if(!lo.isBlank()&&!hi.isBlank())price="$"+lo+"–$"+hi;
+          }
+          parsed++; all.add(new IpoHit(sym,name,d,price,"Nasdaq IPO Calendar"));
         }catch(Exception ignored){}
       }
     }
-    // de-duplicate monthly overlaps
     var seen=new HashSet<String>();var out=new ArrayList<IpoHit>();
     for(var h:all)if(seen.add((h.symbol+"|"+h.name+"|"+h.date).toLowerCase(Locale.ROOT)))out.add(h);
-    LAST_IPO_DIAG=new ProviderDiag("Nasdaq",http,ct,"JSON: proposedTickerSymbol,companyName,expectedPriceDate,proposedSharePrice",rows,parsed,out.size(),"valid JSON");
+    LAST_IPO_DIAG=new ProviderDiag("Nasdaq upcoming",http,ct,
+      "data.upcoming.rows: proposedTickerSymbol,companyName,expectedPriceDate,proposedSharePrice",
+      rows,parsed,out.size(),"parsed upcoming section only");
     return out;
   }
 
