@@ -4,6 +4,8 @@ import com.sun.net.httpserver.*;
 import java.io.*;
 import java.awt.Desktop;
 import java.net.*;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -174,49 +176,60 @@ public class MarketLedger {
   }
 
 
-  record EarningsHit(String symbol,long epoch,String session,String source) {}
+  record EarningsHit(String symbol,long epoch,boolean estimated,String source) {}
+  record EarningsSyncResult(int checked,int found,int changed,int failed,List<String> failures) {}
 
   static void startEarningsWorker(){
     var scheduler=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"marketledger-earnings");t.setDaemon(true);return t;});
     scheduler.scheduleWithFixedDelay(()->{
       try{
-        int n=syncUpcomingEarnings();
-        System.out.println("Earnings engine: sync complete ("+n+" watchlist events added/updated)");
+        EarningsSyncResult r=syncUpcomingEarnings();
+        System.out.println("Earnings engine: checked="+r.checked+" found="+r.found+" changed="+r.changed+" failed="+r.failed);
       }catch(Throwable e){System.err.println("Earnings engine warning: "+e.getMessage());}
     },45,21600,TimeUnit.SECONDS);
     System.out.println("Earnings engine: scheduled every 6 hours");
   }
 
   static void syncEarningsEndpoint(HttpExchange x)throws Exception{
-    int n=syncUpcomingEarnings();
-    json(x,200,"{\"ok\":true,\"updated\":"+n+",\"message\":\"Upcoming earnings synced for watchlist\"}");
+    EarningsSyncResult r=syncUpcomingEarnings();
+    StringBuilder fs=new StringBuilder("[");
+    for(int i=0;i<Math.min(8,r.failures.size());i++){
+      if(i>0)fs.append(",");
+      fs.append("\"").append(esc(r.failures.get(i))).append("\"");
+    }
+    fs.append("]");
+    json(x,200,"{\"ok\":true,\"checked\":"+r.checked+",\"found\":"+r.found+",\"updated\":"+r.changed+",\"failed\":"+r.failed+",\"failures\":"+fs+"}");
   }
 
-  static int syncUpcomingEarnings() throws Exception {
+  static EarningsSyncResult syncUpcomingEarnings() throws Exception {
     List<Stock> stocks;
     synchronized(LOCK){stocks=readStocks();}
     var hits=new ArrayList<EarningsHit>();
+    var failures=new ArrayList<String>();
+    YahooSession ys=null;
+    try{ys=openYahooSession();}catch(Exception e){failures.add("Yahoo session: "+e.getMessage());}
     for(var st:stocks){
       try{
-        EarningsHit h=fetchYahooEarnings(st.symbol);
+        EarningsHit h=ys==null?null:fetchYahooEarnings(ys,st.symbol);
         if(h!=null)hits.add(h);
-      }catch(Exception e){System.err.println("Earnings lookup "+st.symbol+": "+e.getMessage());}
+      }catch(Exception e){failures.add(st.symbol+": "+e.getMessage());}
     }
-    if(hits.isEmpty())return 0;
+
     int changed=0;
-    synchronized(LOCK){
-      var es=readEvents();
+    if(!hits.isEmpty()) synchronized(LOCK){
+      var es=dedupeEvents(readEvents());
       long next=es.stream().mapToLong(Event::id).max().orElse(0)+1;
       ZoneId ny=ZoneId.of("America/New_York");
-      long now=System.currentTimeMillis(), horizon=now+45L*24*60*60*1000;
+      long nowMs=System.currentTimeMillis(), horizon=nowMs+60L*24*60*60*1000;
       for(var h:hits){
-        if(h.epoch<now-12L*60*60*1000||h.epoch>horizon)continue;
+        long eventMs=h.epoch*1000L;
+        if(eventMs<nowMs-12L*60*60*1000||eventMs>horizon)continue;
         ZonedDateTime z=Instant.ofEpochSecond(h.epoch).atZone(ny);
         String day=z.toLocalDate().toString();
-        String sess=h.session;
-        LocalTime time=sess.equals("BMO")?LocalTime.of(8,0):sess.equals("AMC")?LocalTime.of(16,5):LocalTime.NOON;
-        String when=day+" "+String.format(Locale.US,"%02d:%02d",time.getHour(),time.getMinute());
-        String title="Upcoming earnings • "+(sess.equals("BMO")?"Before market open":sess.equals("AMC")?"After market close":"Time not confirmed")+" • auto-synced";
+        // Yahoo calendarEvents reliably supplies the date, but not a dependable BMO/AMC field.
+        // Keep timing TBD unless a future provider supplies explicit session metadata.
+        String when=day+" 12:00";
+        String title="Upcoming earnings • Time TBD • "+(h.estimated?"estimated date":"reported calendar date")+" • auto-synced";
         Event old=es.stream().filter(e->e.type.equalsIgnoreCase("EARNINGS")&&e.scope.equalsIgnoreCase(h.symbol)&&e.title.contains("auto-synced")).findFirst().orElse(null);
         if(old!=null){
           if(!old.when.equals(when)||!old.title.equals(title)){
@@ -226,33 +239,82 @@ public class MarketLedger {
           es.add(new Event(next++,when,"EARNINGS","HIGH",h.symbol,title,now()));changed++;
         }
       }
+      es=dedupeEvents(es);
       es.sort(Comparator.comparing(Event::when));
-      if(changed>0)writeEvents(es);
+      writeEvents(es);
+    } else {
+      // Still clean legacy duplicate events even if the provider returns nothing.
+      synchronized(LOCK){
+        var old=readEvents(); var clean=dedupeEvents(old);
+        if(clean.size()!=old.size()){writeEvents(clean);changed+=old.size()-clean.size();}
+      }
     }
-    return changed;
+    return new EarningsSyncResult(stocks.size(),hits.size(),changed,failures.size(),failures);
   }
 
-  static EarningsHit fetchYahooEarnings(String sym)throws Exception{
-    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(6)).build();
-    String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);
-    String[] urls={
-      "https://query1.finance.yahoo.com/v10/finance/quoteSummary/"+enc+"?modules=calendarEvents",
-      "https://query2.finance.yahoo.com/v10/finance/quoteSummary/"+enc+"?modules=calendarEvents"
-    };
-    for(String u:urls){
-      HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7").GET().build(),HttpResponse.BodyHandlers.ofString());
-      if(r.statusCode()!=200)continue;
-      String b=r.body();
-      var block=java.util.regex.Pattern.compile("\\\"earningsDate\\\"\\s*:\\s*\\[(.*?)\\]",java.util.regex.Pattern.DOTALL).matcher(b);
-      if(!block.find())continue;
-      var raw=java.util.regex.Pattern.compile("\\\"raw\\\"\\s*:\\s*(\\d{9,12})").matcher(block.group(1));
-      if(!raw.find())continue;
-      long epoch=Long.parseLong(raw.group(1));
-      ZonedDateTime z=Instant.ofEpochSecond(epoch).atZone(ZoneId.of("America/New_York"));
-      String sess=z.getHour()<11?"BMO":z.getHour()>=16?"AMC":"TBD";
-      return new EarningsHit(sym,epoch,sess,"Yahoo calendarEvents");
+  static ArrayList<Event> dedupeEvents(List<Event> input){
+    var out=new ArrayList<Event>();
+    var seen=new HashSet<String>();
+    for(var e:input){
+      String key=(e.when+"|"+e.type+"|"+e.impact+"|"+e.scope+"|"+e.title).toLowerCase(Locale.ROOT).replaceAll("\\s+"," ").trim();
+      if(seen.add(key))out.add(e);
     }
-    return null;
+    return out;
+  }
+
+  record YahooSession(HttpClient client,String crumb) {}
+
+  static YahooSession openYahooSession() throws Exception {
+    CookieManager cm=new CookieManager();
+    cm.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
+    HttpClient c=HttpClient.newBuilder().cookieHandler(cm).followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
+
+    // Bootstrap Yahoo's session cookie, then obtain the crumb required by quoteSummary.
+    try{
+      c.send(HttpRequest.newBuilder(URI.create("https://fc.yahoo.com"))
+        .timeout(java.time.Duration.ofSeconds(8)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7").GET().build(),
+        HttpResponse.BodyHandlers.discarding());
+    }catch(Exception ignored){}
+
+    HttpResponse<String> cr=c.send(HttpRequest.newBuilder(URI.create("https://query1.finance.yahoo.com/v1/test/getcrumb"))
+      .timeout(java.time.Duration.ofSeconds(8)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7").GET().build(),
+      HttpResponse.BodyHandlers.ofString());
+    if(cr.statusCode()!=200||cr.body()==null||cr.body().isBlank())throw new IOException("crumb HTTP "+cr.statusCode());
+    return new YahooSession(c,cr.body().trim());
+  }
+
+  static EarningsHit fetchYahooEarnings(YahooSession ys,String sym)throws Exception{
+    String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);
+    String crumb=URLEncoder.encode(ys.crumb,StandardCharsets.UTF_8);
+    String u="https://query2.finance.yahoo.com/v10/finance/quoteSummary/"+enc+
+      "?modules=calendarEvents&formatted=false&corsDomain=finance.yahoo.com&crumb="+crumb;
+    HttpResponse<String> r=ys.client.send(HttpRequest.newBuilder(URI.create(u))
+      .timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7").GET().build(),
+      HttpResponse.BodyHandlers.ofString());
+    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
+    String b=r.body();
+    int ep=b.indexOf("\"earningsDate\"");
+    if(ep<0)return null;
+    String tail=b.substring(ep,Math.min(b.length(),ep+1200));
+
+    // Yahoo has returned both raw epoch objects and ISO date-time strings across client generations.
+    Long epoch=null;
+    var raw=java.util.regex.Pattern.compile("\\\"raw\\\"\\s*:\\s*(\\d{9,12})").matcher(tail);
+    if(raw.find())epoch=Long.parseLong(raw.group(1));
+    if(epoch==null){
+      var iso=java.util.regex.Pattern.compile("\\\"earningsDate\\\"\\s*:\\s*\\[\\s*\\\"([^\\\"]+)\\\"").matcher(tail);
+      if(iso.find()){
+        String v=iso.group(1);
+        try{epoch=Instant.parse(v).getEpochSecond();}
+        catch(Exception ex){
+          try{epoch=LocalDate.parse(v.substring(0,10)).atStartOfDay(ZoneId.of("America/New_York")).toEpochSecond();}
+          catch(Exception ignored){}
+        }
+      }
+    }
+    if(epoch==null)return null;
+    boolean estimated=tail.matches("(?s).*\\\"isEarningsDateEstimate\\\"\\s*:\\s*true.*");
+    return new EarningsHit(sym,epoch,estimated,"Yahoo calendarEvents authenticated");
   }
 
   static void migrateLegacyData() throws IOException {
