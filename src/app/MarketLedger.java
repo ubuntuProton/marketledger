@@ -54,6 +54,7 @@ public class MarketLedger {
     server.createContext("/", MarketLedger::route);
     server.setExecutor(Executors.newCachedThreadPool()); server.start();
     startOutcomeWorker();
+    startEarningsWorker();
     System.out.println("Market Ledger running at http://localhost:"+PORT);
     System.out.println("Data folder: "+DATA.toAbsolutePath());
     if(System.getenv("RENDER")==null){
@@ -172,6 +173,88 @@ public class MarketLedger {
     var tm=java.util.regex.Pattern.compile("\\\"timestamp\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);var cm=java.util.regex.Pattern.compile("\\\"close\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);if(!tm.find()||!cm.find())return List.of();String[] ts=tm.group(1).split(","),cs=cm.group(1).split(",");var out=new ArrayList<PricePoint>();for(int i=0;i<Math.min(ts.length,cs.length);i++){try{String cv=cs[i].trim();if(cv.equals("null"))continue;out.add(new PricePoint(Long.parseLong(ts[i].trim())*1000L,Double.parseDouble(cv)));}catch(Exception ignored){}}return out;
   }
 
+
+  record EarningsHit(String symbol,long epoch,String session,String source) {}
+
+  static void startEarningsWorker(){
+    var scheduler=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"marketledger-earnings");t.setDaemon(true);return t;});
+    scheduler.scheduleWithFixedDelay(()->{
+      try{
+        int n=syncUpcomingEarnings();
+        System.out.println("Earnings engine: sync complete ("+n+" watchlist events added/updated)");
+      }catch(Throwable e){System.err.println("Earnings engine warning: "+e.getMessage());}
+    },45,21600,TimeUnit.SECONDS);
+    System.out.println("Earnings engine: scheduled every 6 hours");
+  }
+
+  static void syncEarningsEndpoint(HttpExchange x)throws Exception{
+    int n=syncUpcomingEarnings();
+    json(x,200,"{\"ok\":true,\"updated\":"+n+",\"message\":\"Upcoming earnings synced for watchlist\"}");
+  }
+
+  static int syncUpcomingEarnings() throws Exception {
+    List<Stock> stocks;
+    synchronized(LOCK){stocks=readStocks();}
+    var hits=new ArrayList<EarningsHit>();
+    for(var st:stocks){
+      try{
+        EarningsHit h=fetchYahooEarnings(st.symbol);
+        if(h!=null)hits.add(h);
+      }catch(Exception e){System.err.println("Earnings lookup "+st.symbol+": "+e.getMessage());}
+    }
+    if(hits.isEmpty())return 0;
+    int changed=0;
+    synchronized(LOCK){
+      var es=readEvents();
+      long next=es.stream().mapToLong(Event::id).max().orElse(0)+1;
+      ZoneId ny=ZoneId.of("America/New_York");
+      long now=System.currentTimeMillis(), horizon=now+45L*24*60*60*1000;
+      for(var h:hits){
+        if(h.epoch<now-12L*60*60*1000||h.epoch>horizon)continue;
+        ZonedDateTime z=Instant.ofEpochSecond(h.epoch).atZone(ny);
+        String day=z.toLocalDate().toString();
+        String sess=h.session;
+        LocalTime time=sess.equals("BMO")?LocalTime.of(8,0):sess.equals("AMC")?LocalTime.of(16,5):LocalTime.NOON;
+        String when=day+" "+String.format(Locale.US,"%02d:%02d",time.getHour(),time.getMinute());
+        String title="Upcoming earnings • "+(sess.equals("BMO")?"Before market open":sess.equals("AMC")?"After market close":"Time not confirmed")+" • auto-synced";
+        Event old=es.stream().filter(e->e.type.equalsIgnoreCase("EARNINGS")&&e.scope.equalsIgnoreCase(h.symbol)&&e.title.contains("auto-synced")).findFirst().orElse(null);
+        if(old!=null){
+          if(!old.when.equals(when)||!old.title.equals(title)){
+            int idx=es.indexOf(old);es.set(idx,new Event(old.id,when,"EARNINGS","HIGH",h.symbol,title,old.created));changed++;
+          }
+        }else{
+          es.add(new Event(next++,when,"EARNINGS","HIGH",h.symbol,title,now()));changed++;
+        }
+      }
+      es.sort(Comparator.comparing(Event::when));
+      if(changed>0)writeEvents(es);
+    }
+    return changed;
+  }
+
+  static EarningsHit fetchYahooEarnings(String sym)throws Exception{
+    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(6)).build();
+    String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);
+    String[] urls={
+      "https://query1.finance.yahoo.com/v10/finance/quoteSummary/"+enc+"?modules=calendarEvents",
+      "https://query2.finance.yahoo.com/v10/finance/quoteSummary/"+enc+"?modules=calendarEvents"
+    };
+    for(String u:urls){
+      HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7").GET().build(),HttpResponse.BodyHandlers.ofString());
+      if(r.statusCode()!=200)continue;
+      String b=r.body();
+      var block=java.util.regex.Pattern.compile("\\\"earningsDate\\\"\\s*:\\s*\\[(.*?)\\]",java.util.regex.Pattern.DOTALL).matcher(b);
+      if(!block.find())continue;
+      var raw=java.util.regex.Pattern.compile("\\\"raw\\\"\\s*:\\s*(\\d{9,12})").matcher(block.group(1));
+      if(!raw.find())continue;
+      long epoch=Long.parseLong(raw.group(1));
+      ZonedDateTime z=Instant.ofEpochSecond(epoch).atZone(ZoneId.of("America/New_York"));
+      String sess=z.getHour()<11?"BMO":z.getHour()>=16?"AMC":"TBD";
+      return new EarningsHit(sym,epoch,sess,"Yahoo calendarEvents");
+    }
+    return null;
+  }
+
   static void migrateLegacyData() throws IOException {
     Path legacy=Paths.get("data").toAbsolutePath().normalize();
     if(legacy.equals(DATA.toAbsolutePath().normalize()) || !Files.isDirectory(legacy)) return;
@@ -220,6 +303,7 @@ public class MarketLedger {
       if(p.equals("/api/notes") && m.equals("POST")) { addNote(x); return; }
       if(p.equals("/api/events") && m.equals("POST")) { addEvent(x); return; }
       if(p.equals("/api/context/schwab/sync") && m.equals("POST")) { syncSchwab(x); return; }
+      if(p.equals("/api/context/earnings/sync") && m.equals("POST")) { syncEarningsEndpoint(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("GET")) { marketSettingsGet(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
