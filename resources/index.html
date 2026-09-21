@@ -64,12 +64,28 @@ function ipoPrice(e){let m=(e.title||'').match(/Price\s+([^•]+)/i);return m?m[
 function renderIpos(){let es=ipoRows(),b=$('#ipos'),s=$('#ipoSummary');if(!b)return;if(!es.length){b.innerHTML='<tr><td colspan=4 class=muted>No upcoming IPOs currently loaded.</td></tr>';s.textContent='Use Sync corporate calendar to refresh IPO and earnings data.';return}b.innerHTML=es.map(e=>`<tr><td><b>${esc(e.scope==='ALL'?'TBD':e.scope)}</b></td><td>${esc(ipoCompany(e))}</td><td>${esc(e.when.slice(0,10))}</td><td>${esc(ipoPrice(e))}</td></tr>`).join('');s.textContent=es.length+' upcoming IPO'+(es.length===1?'':'s')+' loaded.'}
 function notifyUpcomingIpos(){if(!('Notification' in window)||Notification.permission!=='granted')return;let now=Date.now();for(let e of ipoRows()){let t=Date.parse(e.when.replace(' ','T')+':00-04:00'),d=(t-now)/86400000;if(d<0||d>7)continue;let key='ml_ipo_'+e.scope+'_'+e.when.slice(0,10);if(localStorage.getItem(key))continue;new Notification('MarketLedger • Upcoming IPO',{body:(e.scope==='ALL'?'Symbol TBD':e.scope)+' • '+ipoCompany(e)+' • '+(d<1?'today':'in '+Math.ceil(d)+' days')});localStorage.setItem(key,'1')}}
 async function loadCorporateDiagnostics(){try{let d=await api('/api/context/corporate/diagnostics'),p=d.providers||{},ed=$('#earningsDiag'),id=$('#ipoDiag');if(ed){let x=p.xoomar||d.earnings,a=p.alphaEarnings;ed.textContent=`Xoomar: ${x.matches}/${Math.max(29,x.matches)} watchlist dates • parsed ${x.parsed} • ${x.note}`+(a&&a.http?` | Alpha Vantage merge: ${a.matches} matches`:``)}if(id){let n=p.nasdaqIpo||d.ipos,a=p.alphaIpo;id.textContent=`Nasdaq: ${n.matches} upcoming • parsed ${n.parsed} • rows ${n.rows} • ${n.note}`+(a&&a.http?` | Alpha Vantage merge: ${a.matches} upcoming`:``)}}catch(e){}}
-async function syncCorporate(){try{toast('Syncing earnings + IPO calendars…');let r=await api('/api/context/corporate/sync',{method:'POST'});toast(`Corporate calendar: earnings ${r.earnings.found} • IPOs ${r.ipos.found}`);await loadEarningsMeta();await load();await loadCorporateDiagnostics();let es=$('#earningsSummary');if(es)es.textContent=`Last sync: ${r.earnings.checked} checked • ${r.earnings.found} refreshed • ${r.earnings.updated} changes • ${r.earnings.failed} failures`+(r.earnings.failures?.length?' • '+r.earnings.failures.slice(0,2).join(' | '):'');let is=$('#ipoSummary');if(is)is.textContent=`Last sync: ${r.ipos.found} IPOs found • ${r.ipos.updated} changes • ${r.ipos.failed} failures`+(r.ipos.failures?.length?' • '+r.ipos.failures.slice(0,2).join(' | '):'')}catch(e){toast('Corporate calendar sync failed: '+e.message)}}
+async function syncCorporate(){try{toast('Syncing earnings + IPO calendars…');let r=await api('/api/context/corporate/sync',{method:'POST'});toast(`Corporate calendar: earnings ${r.earnings.found} • IPOs ${r.ipos.found}`);await load();await loadEarningsMeta();applyEarningsMetadataToTable();await loadCorporateDiagnostics();let es=$('#earningsSummary');if(es)es.textContent=`Last sync: ${r.earnings.checked} checked • ${r.earnings.found} refreshed • ${r.earnings.updated} changes • ${r.earnings.failed} failures`+(r.earnings.failures?.length?' • '+r.earnings.failures.slice(0,2).join(' | '):'');let is=$('#ipoSummary');if(is)is.textContent=`Last sync: ${r.ipos.found} IPOs found • ${r.ipos.updated} changes • ${r.ipos.failed} failures`+(r.ipos.failures?.length?' • '+r.ipos.failures.slice(0,2).join(' | '):'')}catch(e){toast('Corporate calendar sync failed: '+e.message)}}
 let earningsMetaCache={};
+function applyEarningsMetadataToTable(){
+  let cards=[...document.querySelectorAll('div')];
+  let card=cards.find(x=>x.querySelector?.('table')&&x.textContent.includes('Upcoming Earnings'));
+  if(!card)return;
+  let table=card.querySelector('table'); if(!table)return;
+  let trh=table.querySelector('thead tr');
+  if(trh)trh.innerHTML='<th>TICKER</th><th>WHEN</th><th>TIMING</th><th>STATUS</th><th>SOURCE</th><th>RISK</th>';
+  for(let tr of table.querySelectorAll('tbody tr')){
+    let cells=[...tr.children]; if(cells.length<4)continue;
+    let sym=(cells[0].textContent||'').trim().toUpperCase(),m=earningsMetaCache[sym];
+    if(!m)continue;
+    let when=cells[1].innerHTML, risk=cells[cells.length-1].innerHTML;
+    tr.innerHTML=`<td>${sym}</td><td>${when}</td><td>${m.timing||'TBD'}</td><td>${m.confidence||'CACHED'}</td><td>${m.source||'—'}</td><td>${risk}</td>`;
+  }
+}
 async function loadEarningsMeta(){
   try{
     let rows=await api('/api/context/earnings/meta'); earningsMetaCache={};
     for(let r of rows)if(r.symbol)earningsMetaCache[r.symbol.toUpperCase()]=r;
+    applyEarningsMetadataToTable();
   }catch(e){}
 }
 function earningsMeta(e){

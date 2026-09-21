@@ -215,7 +215,38 @@ public class MarketLedger {
   static volatile ProviderDiag LAST_AV_IPO_DIAG=new ProviderDiag("Alpha Vantage",0,"","",0,0,0,"not synced");
   record CorporateSyncResult(EarningsSyncResult earnings,int ipoFound,int ipoChanged,int ipoFailed,List<String> ipoFailures) {}
 
+  static void migrateEarningsMetadata(){
+    try{
+      synchronized(LOCK){
+        var events=readEvents(); boolean changed=false;
+        for(int i=0;i<events.size();i++){
+          Event e=events.get(i);
+          if(!"EARNINGS".equalsIgnoreCase(e.type))continue;
+          String title=e.title==null?"":e.title;
+          String sym=e.scope==null?"":e.scope.toUpperCase(Locale.ROOT);
+          ConfirmedEarnings ce=CONFIRMED_EARNINGS.get(sym);
+
+          if(ce!=null){
+            String when=String.format(Locale.US,"%s %s",ce.date,
+              ce.timing.equals("AMC")?"16:30":ce.timing.equals("BMO")?"08:00":"12:00");
+            String nt="CONFIRMED earnings • "+sym+" • timing="+ce.timing+" • source="+ce.source+" • auto-synced";
+            String impact="LOW";
+            if(!when.equals(e.when)||!nt.equals(e.title)||!impact.equals(e.impact)){
+              events.set(i,new Event(e.id,when,"EARNINGS",impact,sym,nt,e.created)); changed=true;
+            }
+          }else if(!title.startsWith("CONFIRMED earnings")&&!title.startsWith("ESTIMATED earnings")){
+            String src=title.contains("Xoomar")?"Xoomar/SEC":title.contains("Alpha Vantage")?"Alpha Vantage":"Legacy calendar";
+            String nt="ESTIMATED earnings • "+sym+" • timing=TBD • source="+src+" • auto-synced";
+            events.set(i,new Event(e.id,e.when,"EARNINGS","LOW",sym,nt,e.created)); changed=true;
+          }
+        }
+        if(changed)writeEvents(events);
+      }
+    }catch(Exception e){System.err.println("Earnings metadata migration: "+e.getMessage());}
+  }
+
   static void startCorporateCalendarWorker(){
+    migrateEarningsMetadata();
     var scheduler=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"marketledger-corporate-calendar");t.setDaemon(true);return t;});
     scheduler.scheduleWithFixedDelay(()->{
       try{
@@ -449,6 +480,7 @@ public class MarketLedger {
       writeEvents(es); // includes cached auto-synced earnings when providers temporarily fail
     }
     if(hits.isEmpty()&&primary.equals("none"))failures.add("No provider returned usable earnings dates; cached events preserved");
+    migrateEarningsMetadata();
     return new EarningsSyncResult(stocks.size(),hits.size(),changed,failures.size(),failures);
   }
 
