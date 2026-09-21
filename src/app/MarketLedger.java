@@ -181,6 +181,23 @@ public class MarketLedger {
   static final Map<String,ConfirmedEarnings> CONFIRMED_EARNINGS=Map.of(
     "MU",new ConfirmedEarnings("MU",LocalDate.of(2026,9,30),"AMC","Micron Investor Relations")
   );
+  static String earningsConfidence(EarningsHit h){return h.estimated?"ESTIMATED":"CONFIRMED";}
+  static String earningsTiming(EarningsHit h){
+    ConfirmedEarnings c=CONFIRMED_EARNINGS.get(h.symbol.toUpperCase(Locale.ROOT));
+    return c==null?"TBD":c.timing;
+  }
+  static String earningsEventTitle(EarningsHit h){
+    return earningsConfidence(h)+" earnings • timing="+earningsTiming(h)+" • source="+h.source+" • auto-synced";
+  }
+  static String earningsImpact(EarningsHit h){
+    LocalDate event=Instant.ofEpochSecond(h.epoch).atZone(ZoneId.of("America/New_York")).toLocalDate();
+    long days=java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(ZoneId.of("America/New_York")),event);
+    // High is reserved for the near-event window. Estimates farther out are context only.
+    if(!h.estimated && days<=1)return "HIGH";
+    if(h.estimated && days<=1)return "MEDIUM";
+    return "LOW";
+  }
+
   static EarningsHit applyConfirmedEarnings(EarningsHit h){
     ConfirmedEarnings c=CONFIRMED_EARNINGS.get(h.symbol.toUpperCase(Locale.ROOT));
     if(c==null)return h;
@@ -435,22 +452,31 @@ public class MarketLedger {
     return out;
   }
 
+  static volatile long XOOMAR_BACKOFF_UNTIL=0L;
   static List<EarningsHit> fetchXoomarEarnings(List<Stock> stocks)throws Exception{
+    long now=System.currentTimeMillis();
+    if(now<XOOMAR_BACKOFF_UNTIL){
+      long mins=Math.max(1,(XOOMAR_BACKOFF_UNTIL-now)/60000);
+      LAST_EARNINGS_DIAG=LAST_XOOMAR_DIAG=new ProviderDiag("Xoomar/SEC per-ticker",0,"","",0,0,0,"circuit open; retry in ~"+mins+"m");
+      return new ArrayList<>();
+    }
     HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
-    var out=new ArrayList<EarningsHit>(); int providerRows=0,parsed=0,ok=0,notFound=0,failed=0;
+    var out=new ArrayList<EarningsHit>(); int providerRows=0,parsed=0,ok=0,notFound=0,failed=0,consecutiveFailures=0;
     ZoneId ny=ZoneId.of("America/New_York"); LocalDate today=LocalDate.now(ny),limit=today.plusDays(120);
     for(var st:stocks){
+      if(consecutiveFailures>=3){
+        XOOMAR_BACKOFF_UNTIL=System.currentTimeMillis()+30*60*1000L;
+        break;
+      }
       String sym=st.symbol.toUpperCase(Locale.ROOT);
       String u="https://xoomar.com/api/markets/earnings/"+URLEncoder.encode(sym,StandardCharsets.UTF_8);
       try{
         HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(12))
-          .header("User-Agent","MarketLedger/3.3").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());
-        if(r.statusCode()==404){notFound++;continue;}
-        if(r.statusCode()!=200){failed++;continue;}
-        ok++; String body=r.body()==null?"":r.body();
-        // Per-ticker response contains data.next with the next estimate.
-        int ni=body.indexOf("\"next\"");
-        if(ni<0)continue;
+          .header("User-Agent","MarketLedger/3.5").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());
+        if(r.statusCode()==404){notFound++;consecutiveFailures=0;continue;}
+        if(r.statusCode()!=200){failed++;consecutiveFailures++;continue;}
+        ok++;consecutiveFailures=0;String body=r.body()==null?"":r.body();
+        int ni=body.indexOf("\"next\"");if(ni<0)continue;
         String tail=body.substring(ni,Math.min(body.length(),ni+1800));
         String date=jsonString(tail,"date"),status=jsonString(tail,"status");
         if(date.isBlank())continue;
@@ -461,11 +487,12 @@ public class MarketLedger {
           long epoch=d.atTime(12,0).atZone(ny).toEpochSecond();
           out.add(new EarningsHit(sym,epoch,!status.equalsIgnoreCase("reported"),"Xoomar/SEC"));
         }catch(Exception ignored){}
-      }catch(Exception e){failed++;}
+      }catch(Exception e){failed++;consecutiveFailures++;}
     }
-    LAST_EARNINGS_DIAG=LAST_XOOMAR_DIAG=new ProviderDiag("Xoomar/SEC per-ticker",200,"application/json",
-      "data.next: date,status,basis",providerRows,parsed,out.size(),
-      "ticker requests ok="+ok+", 404="+notFound+", failed="+failed);
+    String note="ticker requests ok="+ok+", 404="+notFound+", failed="+failed;
+    if(XOOMAR_BACKOFF_UNTIL>System.currentTimeMillis())note+="; circuit opened 30m after 3 consecutive failures";
+    LAST_EARNINGS_DIAG=LAST_XOOMAR_DIAG=new ProviderDiag("Xoomar/SEC per-ticker",ok>0?200:0,"application/json",
+      "data.next: date,status,basis",providerRows,parsed,out.size(),note);
     return out;
   }
 
