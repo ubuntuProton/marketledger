@@ -198,38 +198,49 @@ public class MarketLedger {
       fs.append("\"").append(esc(r.failures.get(i))).append("\"");
     }
     fs.append("]");
-    json(x,200,"{\"ok\":true,\"checked\":"+r.checked+",\"found\":"+r.found+",\"updated\":"+r.changed+",\"failed\":"+r.failed+",\"failures\":"+fs+"}");
+    boolean av=System.getenv("ALPHA_VANTAGE_API_KEY")!=null&&!System.getenv("ALPHA_VANTAGE_API_KEY").isBlank();
+    json(x,200,"{\"ok\":true,\"checked\":"+r.checked+",\"found\":"+r.found+",\"updated\":"+r.changed+",\"failed\":"+r.failed+",\"alphaVantageConfigured\":"+av+",\"failures\":"+fs+"}");
   }
 
   static EarningsSyncResult syncUpcomingEarnings() throws Exception {
     List<Stock> stocks;
     synchronized(LOCK){stocks=readStocks();}
-    var hits=new ArrayList<EarningsHit>();
     var failures=new ArrayList<String>();
-    YahooSession ys=null;
-    try{ys=openYahooSession();}catch(Exception e){failures.add("Yahoo session: "+e.getMessage());}
-    for(var st:stocks){
+    var hits=new ArrayList<EarningsHit>();
+    String primary="none";
+
+    String avKey=System.getenv("ALPHA_VANTAGE_API_KEY");
+    if(avKey!=null&&!avKey.isBlank()){
       try{
-        EarningsHit h=ys==null?null:fetchYahooEarnings(ys,st.symbol);
-        if(h!=null)hits.add(h);
-      }catch(Exception e){failures.add(st.symbol+": "+e.getMessage());}
+        hits.addAll(fetchAlphaVantageCalendar(avKey,stocks));
+        primary="Alpha Vantage";
+      }catch(Exception e){failures.add("Alpha Vantage: "+e.getMessage());}
+    }else failures.add("Alpha Vantage: ALPHA_VANTAGE_API_KEY not configured");
+
+    // Yahoo is fallback only. Never discard cached earnings if it is rate-limited.
+    if(hits.isEmpty()){
+      try{
+        YahooSession ys=openYahooSession();
+        for(var st:stocks){
+          try{var h=fetchYahooEarnings(ys,st.symbol);if(h!=null)hits.add(h);}
+          catch(Exception e){failures.add("Yahoo "+st.symbol+": "+e.getMessage());}
+        }
+        if(!hits.isEmpty())primary="Yahoo fallback";
+      }catch(Exception e){failures.add("Yahoo fallback: "+e.getMessage());}
     }
 
     int changed=0;
-    if(!hits.isEmpty()) synchronized(LOCK){
+    synchronized(LOCK){
       var es=dedupeEvents(readEvents());
+      int before=es.size();
       long next=es.stream().mapToLong(Event::id).max().orElse(0)+1;
-      ZoneId ny=ZoneId.of("America/New_York");
       long nowMs=System.currentTimeMillis(), horizon=nowMs+60L*24*60*60*1000;
       for(var h:hits){
         long eventMs=h.epoch*1000L;
         if(eventMs<nowMs-12L*60*60*1000||eventMs>horizon)continue;
-        ZonedDateTime z=Instant.ofEpochSecond(h.epoch).atZone(ny);
-        String day=z.toLocalDate().toString();
-        // Yahoo calendarEvents reliably supplies the date, but not a dependable BMO/AMC field.
-        // Keep timing TBD unless a future provider supplies explicit session metadata.
+        String day=Instant.ofEpochSecond(h.epoch).atZone(ZoneId.of("America/New_York")).toLocalDate().toString();
         String when=day+" 12:00";
-        String title="Upcoming earnings • Time TBD • "+(h.estimated?"estimated date":"reported calendar date")+" • auto-synced";
+        String title="Upcoming earnings • Time TBD • "+(h.estimated?"estimated date":"reported calendar date")+" • auto-synced • "+h.source;
         Event old=es.stream().filter(e->e.type.equalsIgnoreCase("EARNINGS")&&e.scope.equalsIgnoreCase(h.symbol)&&e.title.contains("auto-synced")).findFirst().orElse(null);
         if(old!=null){
           if(!old.when.equals(when)||!old.title.equals(title)){
@@ -240,16 +251,53 @@ public class MarketLedger {
         }
       }
       es=dedupeEvents(es);
+      if(es.size()<before)changed+=before-es.size();
       es.sort(Comparator.comparing(Event::when));
-      writeEvents(es);
-    } else {
-      // Still clean legacy duplicate events even if the provider returns nothing.
-      synchronized(LOCK){
-        var old=readEvents(); var clean=dedupeEvents(old);
-        if(clean.size()!=old.size()){writeEvents(clean);changed+=old.size()-clean.size();}
-      }
+      writeEvents(es); // includes cached auto-synced earnings when providers temporarily fail
     }
+    if(hits.isEmpty()&&primary.equals("none"))failures.add("No provider returned usable earnings dates; cached events preserved");
     return new EarningsSyncResult(stocks.size(),hits.size(),changed,failures.size(),failures);
+  }
+
+  static List<EarningsHit> fetchAlphaVantageCalendar(String key,List<Stock> stocks)throws Exception{
+    var wanted=new HashSet<String>();
+    for(var st:stocks)wanted.add(st.symbol.toUpperCase(Locale.ROOT));
+    String u="https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey="+
+      URLEncoder.encode(key,StandardCharsets.UTF_8);
+    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
+    HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(15))
+      .header("User-Agent","MarketLedger/2.8").GET().build(),HttpResponse.BodyHandlers.ofString());
+    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
+    String body=r.body()==null?"":r.body().trim();
+    if(body.startsWith("{"))throw new IOException("provider returned JSON notice instead of earnings CSV");
+    String[] lines=body.split("\\R");
+    if(lines.length<2||!lines[0].toLowerCase(Locale.ROOT).contains("reportdate"))
+      throw new IOException("unexpected CSV response");
+    var out=new ArrayList<EarningsHit>();
+    for(int i=1;i<lines.length;i++){
+      String[] f=parseCsvLine(lines[i]);
+      if(f.length<3)continue;
+      String sym=f[0].trim().toUpperCase(Locale.ROOT);
+      if(!wanted.contains(sym))continue;
+      try{
+        LocalDate d=LocalDate.parse(f[2].trim());
+        long epoch=d.atTime(12,0).atZone(ZoneId.of("America/New_York")).toEpochSecond();
+        out.add(new EarningsHit(sym,epoch,true,"Alpha Vantage"));
+      }catch(Exception ignored){}
+    }
+    return out;
+  }
+
+  static String[] parseCsvLine(String line){
+    var fields=new ArrayList<String>();var cur=new StringBuilder();boolean q=false;
+    for(int i=0;i<line.length();i++){
+      char ch=line.charAt(i);
+      if(ch=='"'){if(q&&i+1<line.length()&&line.charAt(i+1)=='"'){cur.append('"');i++;}else q=!q;}
+      else if(ch==','&&!q){fields.add(cur.toString());cur.setLength(0);}
+      else cur.append(ch);
+    }
+    fields.add(cur.toString());
+    return fields.toArray(String[]::new);
   }
 
   static ArrayList<Event> dedupeEvents(List<Event> input){
