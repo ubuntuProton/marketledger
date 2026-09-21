@@ -182,6 +182,10 @@ public class MarketLedger {
   record ProviderDiag(String provider,int http,String contentType,String header,int rows,int parsed,int matches,String note) {}
   static volatile ProviderDiag LAST_EARNINGS_DIAG=new ProviderDiag("none",0,"","",0,0,0,"not synced");
   static volatile ProviderDiag LAST_IPO_DIAG=new ProviderDiag("none",0,"","",0,0,0,"not synced");
+  static volatile ProviderDiag LAST_XOOMAR_DIAG=new ProviderDiag("Xoomar/SEC",0,"","",0,0,0,"not synced");
+  static volatile ProviderDiag LAST_AV_EARNINGS_DIAG=new ProviderDiag("Alpha Vantage",0,"","",0,0,0,"not synced");
+  static volatile ProviderDiag LAST_NASDAQ_IPO_DIAG=new ProviderDiag("Nasdaq",0,"","",0,0,0,"not synced");
+  static volatile ProviderDiag LAST_AV_IPO_DIAG=new ProviderDiag("Alpha Vantage",0,"","",0,0,0,"not synced");
   record CorporateSyncResult(EarningsSyncResult earnings,int ipoFound,int ipoChanged,int ipoFailed,List<String> ipoFailures) {}
 
   static void startCorporateCalendarWorker(){
@@ -200,7 +204,9 @@ public class MarketLedger {
     return "{\"provider\":\""+esc(d.provider)+"\",\"http\":"+d.http+",\"contentType\":\""+esc(d.contentType)+"\",\"header\":\""+esc(d.header)+"\",\"rows\":"+d.rows+",\"parsed\":"+d.parsed+",\"matches\":"+d.matches+",\"note\":\""+esc(d.note)+"\"}";
   }
   static void corporateDiagnosticsEndpoint(HttpExchange x)throws Exception{
-    json(x,200,"{\"earnings\":"+diagJson(LAST_EARNINGS_DIAG)+",\"ipos\":"+diagJson(LAST_IPO_DIAG)+"}");
+    json(x,200,"{\"earnings\":"+diagJson(LAST_EARNINGS_DIAG)+",\"ipos\":"+diagJson(LAST_IPO_DIAG)+
+      ",\"providers\":{\"xoomar\":"+diagJson(LAST_XOOMAR_DIAG)+",\"alphaEarnings\":"+diagJson(LAST_AV_EARNINGS_DIAG)+
+      ",\"nasdaqIpo\":"+diagJson(LAST_NASDAQ_IPO_DIAG)+",\"alphaIpo\":"+diagJson(LAST_AV_IPO_DIAG)+"}}");
   }
 
   static void syncCorporateEndpoint(HttpExchange x)throws Exception{
@@ -224,6 +230,11 @@ public class MarketLedger {
     boolean ipoPrimarySucceeded=false;
     try{ipos.addAll(fetchNasdaqIpos());ipoPrimarySucceeded=true;}
     catch(Exception e){ipoFailures.add("Nasdaq IPO: "+e.getMessage());}
+    try{
+      var nf=fetchNfinIpos();
+      var haveN=new HashSet<String>();for(var h:ipos)haveN.add((h.symbol+"|"+h.date).toLowerCase(Locale.ROOT));
+      for(var h:nf)if(haveN.add((h.symbol+"|"+h.date).toLowerCase(Locale.ROOT)))ipos.add(h);
+    }catch(Exception e){ipoFailures.add("nfin IPO merge: "+e.getMessage());}
     String key=System.getenv("ALPHA_VANTAGE_API_KEY");
     if(key!=null&&!key.isBlank()){
       try{
@@ -267,7 +278,7 @@ public class MarketLedger {
     String[] lines=body.split("\\R"); String header=lines.length>0?lines[0]:"";
     if(lines.length<1||!header.contains(","))throw new IOException("unexpected non-CSV response");
     String[] hdr=parseCsvLine(header); int si=col(hdr,"symbol"),ni=col(hdr,"name"),di=col(hdr,"ipoDate","ipo_date","date"),lo=col(hdr,"priceRangeLow","price_range_low"),hi=col(hdr,"priceRangeHigh","price_range_high");
-    if(di<0){LAST_IPO_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),0,0,"missing date column");throw new IOException("CSV missing IPO date column; header="+header);}
+    if(di<0){LAST_IPO_DIAG=LAST_AV_IPO_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),0,0,"missing date column");throw new IOException("CSV missing IPO date column; header="+header);}
     var out=new ArrayList<IpoHit>(); int parsed=0;
     for(int i=1;i<lines.length;i++){
       String[] f=parseCsvLine(lines[i]); if(f.length<=di)continue;
@@ -278,7 +289,7 @@ public class MarketLedger {
         out.add(new IpoHit(sym,name,d,range,"Alpha Vantage"));
       }catch(Exception ignored){}
     }
-    LAST_IPO_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),parsed,out.size(),"valid CSV");
+    LAST_IPO_DIAG=LAST_AV_IPO_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),parsed,out.size(),"valid CSV");
     return out;
   }
 
@@ -436,7 +447,7 @@ public class MarketLedger {
         }catch(Exception ignored){}
       }catch(Exception e){failed++;}
     }
-    LAST_EARNINGS_DIAG=new ProviderDiag("Xoomar/SEC per-ticker",200,"application/json",
+    LAST_EARNINGS_DIAG=LAST_XOOMAR_DIAG=new ProviderDiag("Xoomar/SEC per-ticker",200,"application/json",
       "data.next: date,status,basis",providerRows,parsed,out.size(),
       "ticker requests ok="+ok+", 404="+notFound+", failed="+failed);
     return out;
@@ -488,9 +499,34 @@ public class MarketLedger {
     }
     var seen=new HashSet<String>();var out=new ArrayList<IpoHit>();
     for(var h:all)if(seen.add((h.symbol+"|"+h.name+"|"+h.date).toLowerCase(Locale.ROOT)))out.add(h);
-    LAST_IPO_DIAG=new ProviderDiag("Nasdaq upcoming",http,ct,
+    LAST_IPO_DIAG=LAST_NASDAQ_IPO_DIAG=new ProviderDiag("Nasdaq upcoming",http,ct,
       "data.upcoming.rows: proposedTickerSymbol,companyName,expectedPriceDate,proposedSharePrice",
       rows,parsed,out.size(),"parsed upcoming section only");
+    return out;
+  }
+
+  static List<IpoHit> fetchNfinIpos()throws Exception{
+    String u="https://nfin.dev/api/v1/ipo/calendar";
+    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
+    HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(20))
+      .header("User-Agent","MarketLedger/3.4").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());
+    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
+    String body=r.body()==null?"":r.body(); var out=new ArrayList<IpoHit>();
+    LocalDate today=LocalDate.now(ZoneId.of("America/New_York"));
+    for(String o:jsonObjects(body)){
+      String sym=jsonString(o,"symbol"); if(sym.isBlank())sym=jsonString(o,"proposedTickerSymbol");
+      String name=jsonString(o,"name"); if(name.isBlank())name=jsonString(o,"companyName");
+      String date=jsonString(o,"date"); if(date.isBlank())date=jsonString(o,"expectedPriceDate");
+      if(name.isBlank()||date.isBlank())continue;
+      try{
+        LocalDate d;
+        try{d=LocalDate.parse(date.substring(0,10));}
+        catch(Exception e){d=LocalDate.parse(date,java.time.format.DateTimeFormatter.ofPattern("M/d/yyyy"));}
+        if(d.isBefore(today.minusDays(2)))continue;
+        String price=jsonString(o,"priceRange"); if(price.isBlank())price=jsonString(o,"proposedSharePrice");
+        out.add(new IpoHit(sym,name,d,price,"nfin/Nasdaq"));
+      }catch(Exception ignored){}
+    }
     return out;
   }
 
@@ -506,7 +542,7 @@ public class MarketLedger {
     String[] lines=body.split("\\R"); String header=lines.length>0?lines[0]:"";
     if(lines.length<1||!header.contains(","))throw new IOException("unexpected non-CSV response");
     String[] hdr=parseCsvLine(header); int si=col(hdr,"symbol"), di=col(hdr,"reportDate","report_date","date");
-    if(si<0||di<0){LAST_EARNINGS_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),0,0,"missing columns");throw new IOException("CSV missing symbol/reportDate; header="+header);}
+    if(si<0||di<0){LAST_EARNINGS_DIAG=LAST_AV_EARNINGS_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),0,0,"missing columns");throw new IOException("CSV missing symbol/reportDate; header="+header);}
     var out=new ArrayList<EarningsHit>(); int parsed=0;
     for(int i=1;i<lines.length;i++){
       String[] f=parseCsvLine(lines[i]); if(f.length<=Math.max(si,di))continue;
@@ -517,7 +553,7 @@ public class MarketLedger {
         out.add(new EarningsHit(sym,epoch,true,"Alpha Vantage"));
       }catch(Exception ignored){}
     }
-    LAST_EARNINGS_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),parsed,out.size(),"valid CSV");
+    LAST_EARNINGS_DIAG=LAST_AV_EARNINGS_DIAG=new ProviderDiag("Alpha Vantage",r.statusCode(),ct,header,Math.max(0,lines.length-1),parsed,out.size(),"valid CSV");
     return out;
   }
 
