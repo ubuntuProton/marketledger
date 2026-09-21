@@ -49,7 +49,7 @@ public class MarketLedger {
   record Note(long id,String title,String body,String tag,String created) {}
   record Event(long id,String when,String type,String impact,String scope,String title,String created) {}
   record Signal(long id,String symbol,long candleTs,String captured,double price,String signal,int score,String phase,double rsi,double vwap,double trend,double volRatio,double atrPct,double spreadPct,String marketText,String eventText,double r15,double r30,double r60) {}
-  record NewsItem(String title,String link,String source,String published,List<String> symbols,String theme,int sourceScore,int relevanceScore,int catalystScore,String catalystClass,String catalystReason) {}
+  record NewsItem(String title,String link,String source,String published,List<String> symbols,String theme,int sourceScore,int relevanceScore,int catalystScore,String catalystClass,String catalystReason,String novelty,String provenance) {}
   static volatile String NEWS_CACHE_JSON = "{\"items\":[],\"themes\":[],\"updated\":null}";
   static volatile long NEWS_CACHE_AT = 0L;
   static volatile String NEWS_CACHE_KEY = "";
@@ -990,7 +990,7 @@ public class MarketLedger {
     int si=0;for(var e:states.entrySet()){if(si++>0)b.append(',');b.append("{\"symbol\":").append(q(e.getKey())).append(",\"state\":").append(q(e.getValue())).append('}');}
     b.append("],\"themes\":[");
     int ti=0;for(var e:themes.entrySet().stream().sorted((a,z)->Integer.compare(z.getValue(),a.getValue())).limit(6).toList()){if(ti++>0)b.append(',');b.append("{\"name\":").append(q(e.getKey())).append(",\"stories\":").append(e.getValue()).append('}');}
-    b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"relevanceScore\":").append(n.relevanceScore()).append(",\"catalystScore\":").append(n.catalystScore()).append(",\"catalystClass\":").append(q(n.catalystClass())).append(",\"catalystReason\":").append(q(n.catalystReason())).append(",\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
+    b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"relevanceScore\":").append(n.relevanceScore()).append(",\"catalystScore\":").append(n.catalystScore()).append(",\"catalystClass\":").append(q(n.catalystClass())).append(",\"catalystReason\":").append(q(n.catalystReason())).append(",\"novelty\":").append(q(n.novelty())).append(",\"provenance\":").append(q(n.provenance())).append(",\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
     NEWS_CACHE_KEY=key;NEWS_CACHE_AT=now;NEWS_CACHE_JSON=b.toString();json(x,200,NEWS_CACHE_JSON);
   }
   static List<NewsItem> parseNewsRss(String xml,Set<String> syms){
@@ -1002,11 +1002,19 @@ public class MarketLedger {
       List<String> hits=new ArrayList<>(); int relevance=0;
       for(String symbol:syms){int r=newsSymbolRelevance(symbol,upper);if(r>0){hits.add(symbol);relevance=Math.max(relevance,r);}}
       if(hits.isEmpty()||relevance<70)continue;
-      String theme=newsTheme(low);int score=sourceScore(source);int catalyst=catalystScore(low,score,relevance,pub);String cclass=catalystClass(catalyst);String creason=catalystReason(low,catalyst);if(cclass.equals("IGNORE"))continue;out.add(new NewsItem(title,link,source.isBlank()?"Public news":source,pub,hits,theme,score,relevance,catalyst,cclass,creason));
+      String novelty=newsNovelty(low), provenance=newsProvenance(low);
+      if(novelty.equals("REJECTED"))continue;
+      String theme=newsTheme(low);int score=sourceScore(source);int catalyst=catalystScore(low,score,relevance,pub,novelty);String cclass=catalystClass(catalyst,novelty);String creason=catalystReason(low,catalyst,novelty);if(cclass.equals("IGNORE"))continue;out.add(new NewsItem(title,link,source.isBlank()?"Public news":source,pub,hits,theme,score,relevance,catalyst,cclass,creason,novelty,provenance));
     }return out;
   }
   static int newsSymbolRelevance(String symbol,String upper){
     String alias=newsAlias(symbol);
+    // COHR is especially collision-prone: ordinary adjective "coherent" is not Coherent Corp.
+    if(symbol.equals("COHR")){
+      if(containsPhrase(upper,"COHERENT CORP")||containsPhrase(upper,"COHERENT CORP.")||containsPhrase(upper,"COHERENT CORPORATION"))return 100;
+      boolean cohrCtx=java.util.regex.Pattern.compile("(?:NASDAQ\\s*[:(]?\\s*COHR|\\(COHR\\)|COHR\\s+(?:STOCK|SHARES|EARNINGS))").matcher(upper).find();
+      return cohrCtx?92:0;
+    }
     if(!alias.isBlank() && containsPhrase(upper,alias)) return 100;
     // Short/common ticker strings are never accepted by themselves. This prevents BE="be", COIN=literal coin, ARM=body part, META=generic prefix, etc.
     if(Set.of("BE","COIN","ARM","META","AI","ON","IT","ALL").contains(symbol)) return 0;
@@ -1018,25 +1026,39 @@ public class MarketLedger {
   }
   static boolean containsPhrase(String upper,String phrase){return java.util.regex.Pattern.compile("(?:^|[^A-Z0-9])"+java.util.regex.Pattern.quote(phrase)+"(?:[^A-Z0-9]|$)").matcher(upper).find();}
 
-  static int catalystScore(String low,int source,int relevance,String published){
+  static String newsNovelty(String low){
+    if(low.matches(".*(best .* deals|deals you can shop|coupon|discount|review|how to|technical blog|stock forecast|price prediction|prediction:|where will .* stock|should you buy|stocks to buy|stock flashes signal|beats stock market upswing|what investors need to know|could be worth|parabolic).*"))return "REJECTED";
+    if(low.matches(".*(soars|surges|jumps|rallies|rally|rose|gains|climbs|falls|slides|drops|after .* rally|after .* surge|why .* stock|what drove|what happened).*"))return "COMMENTARY";
+    if(low.matches(".*(today|announces|announced|reports|reported|files|filed|wins|won|signs|signed|launches|launched|unveils|unveiled|raises guidance|cuts guidance|approves|approved|acquires|acquired|merger|partnership|contract|order|settlement|lawsuit|investigation|upgrade|downgrade|price target).*"))return "NEW_CATALYST";
+    if(low.matches(".*(earnings|guidance|revenue goal|revenue target|customer|supplier|capacity|shipment|production).*"))return "FOLLOW_THROUGH";
+    return "BACKGROUND";
+  }
+  static String newsProvenance(String low){
+    if(low.matches(".*(files|filed|sec |10-k|10-q|8-k|registration statement).*"))return "FILING / PRIMARY EVENT";
+    if(low.matches(".*(announces|announced|reports|reported|signs|signed|launches|unveils|wins|contract|partnership|settlement|lawsuit|investigation|upgrade|downgrade|price target).*"))return "REPORTED EVENT";
+    if(low.matches(".*(soars|surges|rallies|why .* stock|forecast|prediction|what investors need to know).*"))return "MARKET COMMENTARY";
+    return "SECONDARY CONTEXT";
+  }
+  static int catalystScore(String low,int source,int relevance,String published,String novelty){
     int x=(source>=95?18:source>=85?13:source>=75?9:4)+(relevance>=100?16:10);
-    if(low.matches(".*(earnings|revenue|guidance|forecast|profit|eps|sales|raises guidance|cuts guidance|beats|misses).*"))x+=25;
-    if(low.matches(".*(acquisition|merger|acquire|buyout|partnership|contract|deal|investment|stake|funding|order|customer|supplier).*"))x+=20;
-    if(low.matches(".*(sec |sec\\b|investigation|lawsuit|settlement|recall|ban|approval|fda|antitrust|tariff|export control).*"))x+=18;
+    if(low.matches(".*(earnings|revenue|guidance|profit|eps|sales|raises guidance|cuts guidance|beats|misses).*"))x+=25;
+    if(low.matches(".*(acquisition|merger|acquire|buyout|partnership|contract|investment|stake|funding|order|customer|supplier).*"))x+=20;
+    if(low.matches(".*(sec |investigation|lawsuit|settlement|recall|ban|approval|fda|antitrust|tariff|export control).*"))x+=18;
     if(low.matches(".*(launch|unveil|new chip|gpu|cpu|data center|datacenter|ai model|semiconductor).*"))x+=13;
     if(low.matches(".*(analyst|price target|upgrade|downgrade).*"))x+=8;
-    if(low.matches(".*(technical blog|how to|review|feature in ios|users can get|could be worth|final trade|prediction|parabolic|reasons why|best .* deals|deals you can shop|coupon|discount).*"))x-=40;
+    x+=switch(novelty){case "NEW_CATALYST"->18;case "FOLLOW_THROUGH"->5;case "COMMENTARY"->-24;case "BACKGROUND"->-10;default->-60;};
     try{long age=Duration.between(ZonedDateTime.parse(published,DateTimeFormatter.RFC_1123_DATE_TIME).toInstant(),Instant.now()).toMinutes();if(age<=120)x+=12;else if(age<=360)x+=7;else if(age>900)x-=8;}catch(Exception ignored){}
     return Math.max(0,Math.min(100,x));
   }
-  static String catalystClass(int x){return x>=72?"ACTIONABLE_CATALYST":x>=52?"SUPPORTING_CONTEXT":x>=35?"BACKGROUND":"IGNORE";}
+  static String catalystClass(int x,String novelty){if(novelty.equals("REJECTED"))return "IGNORE";if(novelty.equals("COMMENTARY"))return x>=55?"BACKGROUND":"IGNORE";if(novelty.equals("BACKGROUND"))return x>=35?"BACKGROUND":"IGNORE";return x>=72?"ACTIONABLE_CATALYST":x>=52?"SUPPORTING_CONTEXT":x>=35?"BACKGROUND":"IGNORE";}
   static int newsStateRank(String s){return switch(s){case "ACTIONABLE_CATALYST"->4;case "SUPPORTING_CONTEXT"->3;case "BACKGROUND"->2;default->1;};}
-  static String catalystReason(String low,int x){
-    if(low.matches(".*(earnings|revenue|guidance|forecast|profit|eps|sales).*"))return "earnings / guidance economics";
-    if(low.matches(".*(acquisition|merger|partnership|contract|deal|investment|stake|order|customer|supplier).*"))return "business / capital catalyst";
-    if(low.matches(".*(investigation|lawsuit|settlement|recall|ban|approval|antitrust|tariff|export control).*"))return "regulatory / legal catalyst";
-    if(low.matches(".*(launch|unveil|new chip|gpu|cpu|data center|datacenter|ai model|semiconductor).*"))return "product / technology catalyst";
-    return x>=52?"fresh company-specific development":"company-related background";
+  static String catalystReason(String low,int x,String novelty){
+    String prefix=switch(novelty){case "NEW_CATALYST"->"new reported event — ";case "FOLLOW_THROUGH"->"follow-through — ";case "COMMENTARY"->"commentary about prior/observed move — ";default->"background — ";};
+    if(low.matches(".*(earnings|revenue|guidance|profit|eps|sales|revenue goal|revenue target).*"))return prefix+"earnings / guidance economics";
+    if(low.matches(".*(acquisition|merger|partnership|contract|investment|stake|order|customer|supplier).*"))return prefix+"business / capital event";
+    if(low.matches(".*(investigation|lawsuit|settlement|recall|ban|approval|antitrust|tariff|export control).*"))return prefix+"regulatory / legal event";
+    if(low.matches(".*(launch|unveil|new chip|gpu|cpu|data center|datacenter|ai model|semiconductor).*"))return prefix+"product / technology event";
+    return prefix+"company-specific context";
   }
 
   static boolean newsJunk(String low){return low.matches(".*(\\$?1,?000 invested.*worth|could be worth by|should you buy.*stock|prediction for|where will .* stock be|millionaire-maker|top .* stocks to buy|best stocks to buy|best .* deals|deals you can shop|coupon|discount).*" );}
@@ -1045,7 +1067,7 @@ public class MarketLedger {
   static String xmlDecode(String s){return s.replace("<![CDATA[","").replace("]]>","").replace("&amp;","&").replace("&quot;","\\\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">");}
   static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";case "ALAB"->"ASTERA LABS";case "CRDO"->"CREDO TECHNOLOGY";case "CRWV"->"COREWEAVE";case "NBIS"->"NEBIUS";case "TEM"->"TEMPUS AI";case "CLS"->"CELESTICA";case "ETN"->"EATON";case "GEV"->"GE VERNOVA";case "LEU"->"CENTRUS ENERGY";case "PSTG"->"PURE STORAGE";case "CRCL"->"CIRCLE INTERNET";default->"";};}
   static int sourceScore(String source){String s=source.toLowerCase(Locale.ROOT);if(s.contains("reuters"))return 100;if(s.contains("schwab"))return 95;if(s.contains("sec")||s.contains("business wire")||s.contains("globe newswire"))return 90;if(s.contains("cnbc")||s.contains("bloomberg")||s.contains("associated press"))return 85;return 60;}
-  static String newsTheme(String s){if(s.matches(".*(ai|artificial intelligence|data center|datacenter|gpu|cpu|semiconductor|chip).*"))return "AI / Compute / Semiconductors";if(s.matches(".*(fed|rate|yield|inflation|cpi|jobs|payroll|treasury).*"))return "Rates / Macro";if(s.matches(".*(earnings|revenue|guidance|profit|forecast).*"))return "Earnings / Guidance";if(s.matches(".*(deal|acquisition|merger|partnership|contract).*"))return "Deals / Partnerships";if(s.matches(".*(bitcoin|crypto|ethereum).*"))return "Crypto";return "Company / Market News";}
+  static String newsTheme(String s){if(s.matches(".*(investigation|lawsuit|settlement|recall|ban|approval|antitrust|export control).*"))return "Legal / Regulatory";if(s.matches(".*(earnings|revenue|guidance|profit|eps|sales).*"))return "Earnings / Guidance";if(s.matches(".*(acquisition|merger|partnership|contract|buyout|stake|investment).*"))return "Deals / Partnerships";if(s.matches(".*(ai|artificial intelligence|data center|datacenter|gpu|cpu|semiconductor|chip).*"))return "AI / Compute / Semiconductors";if(s.matches(".*(fed|rate|yield|inflation|cpi|jobs|payroll|treasury).*"))return "Rates / Macro";if(s.matches(".*(bitcoin|crypto|ethereum).*"))return "Crypto";return "Company / Market News";}
 
   static void syncSchwab(HttpExchange x)throws Exception{
     HttpClient client=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
