@@ -177,6 +177,16 @@ public class MarketLedger {
 
 
   record EarningsHit(String symbol,long epoch,boolean estimated,String source) {}
+  record ConfirmedEarnings(String symbol,LocalDate date,String timing,String source) {}
+  static final Map<String,ConfirmedEarnings> CONFIRMED_EARNINGS=Map.of(
+    "MU",new ConfirmedEarnings("MU",LocalDate.of(2026,9,30),"AMC","Micron Investor Relations")
+  );
+  static EarningsHit applyConfirmedEarnings(EarningsHit h){
+    ConfirmedEarnings c=CONFIRMED_EARNINGS.get(h.symbol.toUpperCase(Locale.ROOT));
+    if(c==null)return h;
+    long epoch=c.date.atTime(16,30).atZone(ZoneId.of("America/New_York")).toEpochSecond();
+    return new EarningsHit(h.symbol,epoch,false,c.source);
+  }
   record EarningsSyncResult(int checked,int found,int changed,int failed,List<String> failures) {}
   record IpoHit(String symbol,String name,LocalDate date,String priceRange,String source) {}
   record ProviderDiag(String provider,int http,String contentType,String header,int rows,int parsed,int matches,String note) {}
@@ -370,6 +380,12 @@ public class MarketLedger {
         }
         if(!hits.isEmpty())primary="Yahoo fallback";
       }catch(Exception e){failures.add("Yahoo fallback: "+e.getMessage());}
+    }
+ 
+    {
+      var verified=new ArrayList<EarningsHit>();
+      for(var h:hits)verified.add(applyConfirmedEarnings(h));
+      hits=verified;
     }
 
     int changed=0;
