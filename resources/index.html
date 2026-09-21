@@ -77,7 +77,7 @@ function extendedHoursSetup(c,sym,regularClose,mc,ev){
  if(mom30>.30){score+=10;why.push('positive 30m extended momentum')}else if(mom30<-.30)score-=10;
  if(above3){score+=8;why.push('3 closes above extended VWAP')}
  if(Number.isFinite(rel)){if(rel>=1.5){score+=10;why.push('extended volume '+rel.toFixed(1)+'x baseline')}else if(rel<.6){score-=5;why.push('light extended volume')}}
- if(overnightBars>=3){score+=4;why.push(overnight candles available')}else why.push('overnight feed unavailable/insufficient');
+ if(overnightBars>=3){score+=4;why.push('overnight candles available')}else why.push('overnight feed unavailable/insufficient');
  if(mc?.total>=2&&mc.pos>=2){score+=7;why.push('market/sector supportive')}else if(mc?.neg>=2)score-=8;
  if(vsClose>5){score-=9;why.push('large gap/chase risk')}else if(vsClose>.25)score+=4;
  score=Math.max(0,Math.min(100,Math.round(score)));
