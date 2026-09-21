@@ -187,7 +187,7 @@ public class MarketLedger {
     return c==null?"TBD":c.timing;
   }
   static String earningsEventTitle(EarningsHit h){
-    return earningsConfidence(h)+" earnings • timing="+earningsTiming(h)+" • source="+h.source+" • auto-synced";
+    return earningsConfidence(h)+" earnings • "+h.symbol+" • timing="+earningsTiming(h)+" • source="+h.source+" • auto-synced";
   }
   static String earningsImpact(EarningsHit h){
     LocalDate event=Instant.ofEpochSecond(h.epoch).atZone(ZoneId.of("America/New_York")).toLocalDate();
@@ -230,6 +230,23 @@ public class MarketLedger {
   static String diagJson(ProviderDiag d){
     return "{\"provider\":\""+esc(d.provider)+"\",\"http\":"+d.http+",\"contentType\":\""+esc(d.contentType)+"\",\"header\":\""+esc(d.header)+"\",\"rows\":"+d.rows+",\"parsed\":"+d.parsed+",\"matches\":"+d.matches+",\"note\":\""+esc(d.note)+"\"}";
   }
+  static void earningsMetaEndpoint(HttpExchange x)throws Exception{
+    StringBuilder b=new StringBuilder("["); boolean first=true;
+    for(var e:readEvents()){
+      if(!"EARNINGS".equalsIgnoreCase(e.type))continue;
+      String title=e.title==null?"":e.title;
+      String confidence=title.startsWith("CONFIRMED earnings")?"CONFIRMED":title.startsWith("ESTIMATED earnings")?"ESTIMATED":"CACHED";
+      String timing="TBD",source="";
+      var tm=java.util.regex.Pattern.compile("timing=([^•]+)").matcher(title); if(tm.find())timing=tm.group(1).trim();
+      var sm=java.util.regex.Pattern.compile("source=([^•]+)").matcher(title); if(sm.find())source=sm.group(1).trim();
+      if(!first)b.append(',');first=false;
+      b.append("{\"symbol\":\"").append(esc(e.scope)).append("\",\"confidence\":\"").append(esc(confidence))
+       .append("\",\"timing\":\"").append(esc(timing)).append("\",\"source\":\"").append(esc(source))
+       .append("\",\"impact\":\"").append(esc(e.impact)).append("\",\"title\":\"").append(esc(title)).append("\"}");
+    }
+    b.append(']');json(x,200,b.toString());
+  }
+
   static void corporateDiagnosticsEndpoint(HttpExchange x)throws Exception{
     json(x,200,"{\"earnings\":"+diagJson(LAST_EARNINGS_DIAG)+",\"ipos\":"+diagJson(LAST_IPO_DIAG)+
       ",\"providers\":{\"xoomar\":"+diagJson(LAST_XOOMAR_DIAG)+",\"alphaEarnings\":"+diagJson(LAST_AV_EARNINGS_DIAG)+
@@ -728,6 +745,7 @@ public class MarketLedger {
       if(p.equals("/api/context/earnings/sync") && m.equals("POST")) { syncEarningsEndpoint(x); return; }
       if(p.equals("/api/context/corporate/sync") && m.equals("POST")) { syncCorporateEndpoint(x); return; }
       if(p.equals("/api/context/corporate/diagnostics") && m.equals("GET")) { corporateDiagnosticsEndpoint(x); return; }
+      if(p.equals("/api/context/earnings/meta") && m.equals("GET")) { earningsMetaEndpoint(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("GET")) { marketSettingsGet(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
