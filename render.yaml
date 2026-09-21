@@ -14,3 +14,15 @@ services:
         sync: false
       - key: ALPACA_API_SECRET
         sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: marketledger-db
+          property: connectionString
+
+databases:
+  - name: marketledger-db
+    plan: 0.1c-256mb
+    postgresMajorVersion: "18"
+    databaseName: marketledger
+    user: marketledger
+    ipAllowList: []

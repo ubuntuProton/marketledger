@@ -12,10 +12,13 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.zip.*;
+import java.sql.*;
 
 public class MarketLedger {
   static final int PORT = port();
   static final String ACCESS_PASSWORD = System.getenv().getOrDefault("MARKETLEDGER_PASSWORD", "").trim();
+  static final String DATABASE_URL = System.getenv().getOrDefault("DATABASE_URL", "").trim();
+  static volatile boolean DATABASE_READY = false;
   static final Set<String> SESSIONS = java.util.concurrent.ConcurrentHashMap.newKeySet();
   static int port(){
     String e=System.getenv("PORT");
@@ -44,7 +47,7 @@ public class MarketLedger {
   record Signal(long id,String symbol,long candleTs,String captured,double price,String signal,int score,String phase,double rsi,double vwap,double trend,double volRatio,double atrPct,double spreadPct,String marketText,String eventText,double r15,double r30,double r60) {}
 
   public static void main(String[] args) throws Exception {
-    Files.createDirectories(DATA); Files.createDirectories(BACKUPS); migrateLegacyData(); seed(); backupData();
+    Files.createDirectories(DATA); Files.createDirectories(BACKUPS); initDatabase(); hydrateFromDatabase(); migrateLegacyData(); seed(); syncAllDataToDatabase(); backupData();
     HttpServer server=HttpServer.create(new InetSocketAddress("0.0.0.0",PORT),0);
     server.createContext("/", MarketLedger::route);
     server.setExecutor(Executors.newCachedThreadPool()); server.start();
@@ -56,6 +59,43 @@ public class MarketLedger {
     } else System.out.println("Cloud mode: HTTPS is terminated by the hosting platform.");
   }
 
+
+  static Connection db() throws Exception {
+    if(DATABASE_URL.isBlank()) throw new SQLException("DATABASE_URL is not configured");
+    URI u=URI.create(DATABASE_URL.replaceFirst("^postgresql://","postgres://"));
+    String[] ui=(u.getUserInfo()==null?"":u.getUserInfo()).split(":",2);
+    String user=ui.length>0?URLDecoder.decode(ui[0],StandardCharsets.UTF_8):"";
+    String pass=ui.length>1?URLDecoder.decode(ui[1],StandardCharsets.UTF_8):"";
+    String path=u.getPath()==null?"":u.getPath();
+    String jdbc="jdbc:postgresql://"+u.getHost()+(u.getPort()>0?":"+u.getPort():"")+path;
+    Properties props=new Properties(); props.setProperty("user",user); props.setProperty("password",pass);
+    return DriverManager.getConnection(jdbc,props);
+  }
+  static void initDatabase() throws Exception {
+    if(DATABASE_URL.isBlank()){System.out.println("Storage: local filesystem (not durable in free cloud containers)");return;}
+    Class.forName("org.postgresql.Driver");
+    try(Connection c=db(); Statement st=c.createStatement()){
+      st.executeUpdate("CREATE TABLE IF NOT EXISTS marketledger_files (name VARCHAR(80) PRIMARY KEY, content BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+    }
+    DATABASE_READY=true; System.out.println("Storage: PostgreSQL persistent database connected");
+  }
+  static List<Path> dataFiles(){return List.of(STOCKS,CALLS,NOTES,EVENTS,SIGNALS,SETTINGS);}
+  static void hydrateFromDatabase() throws Exception {
+    if(!DATABASE_READY)return;
+    try(Connection c=db(); PreparedStatement ps=c.prepareStatement("SELECT name, content FROM marketledger_files" ); ResultSet rs=ps.executeQuery()){
+      while(rs.next()){
+        String name=rs.getString(1); if(!Set.of("stocks.tsv","calls.tsv","notes.tsv","events.tsv","signals.tsv","settings.properties").contains(name))continue;
+        Files.write(DATA.resolve(name),rs.getBytes(2));
+      }
+    }
+  }
+  static void persistFile(Path p) throws IOException {
+    if(!DATABASE_READY || !Files.exists(p))return;
+    try(Connection c=db(); PreparedStatement ps=c.prepareStatement("INSERT INTO marketledger_files(name,content,updated_at) VALUES(?,?,NOW()) ON CONFLICT(name) DO UPDATE SET content=EXCLUDED.content, updated_at=NOW()")){
+      ps.setString(1,p.getFileName().toString()); ps.setBytes(2,Files.readAllBytes(p)); ps.executeUpdate();
+    }catch(Exception e){throw new IOException("Persistent database write failed: "+e.getMessage(),e);}
+  }
+  static void syncAllDataToDatabase() throws IOException { if(DATABASE_READY) for(Path p:dataFiles()) if(Files.exists(p)) persistFile(p); }
 
   static void migrateLegacyData() throws IOException {
     Path legacy=Paths.get("data").toAbsolutePath().normalize();
@@ -77,7 +117,8 @@ public class MarketLedger {
   static void route(HttpExchange x) throws IOException {
     try {
       String p=x.getRequestURI().getPath(), m=x.getRequestMethod();
-      if(p.equals("/healthz")){json(x,200,"{\"ok\":true}");return;}
+      if(p.equals("/healthz")){json(x,200,"{\"ok\":true,\"database\":"+q(DATABASE_READY?"persistent":"local")+"}");return;}
+      if(p.equals("/api/storage/status") && m.equals("GET")){json(x,200,"{\"persistent\":"+DATABASE_READY+",\"mode\":"+q(DATABASE_READY?"PostgreSQL":"temporary local files")+"}");return;}
       if(p.equals("/login") && m.equals("GET")){loginPage(x,"");return;}
       if(p.equals("/login") && m.equals("POST")){login(x);return;}
       if(p.equals("/logout")){logout(x);return;}
@@ -204,7 +245,7 @@ public class MarketLedger {
   static Properties marketSettings() throws IOException { Properties p=new Properties(); if(Files.exists(SETTINGS)) try(InputStream in=Files.newInputStream(SETTINGS)){p.load(in);} String k=System.getenv().getOrDefault("ALPACA_API_KEY","").trim(), sec=System.getenv().getOrDefault("ALPACA_API_SECRET","").trim(); if(!k.isBlank())p.setProperty("alpaca.key",k); if(!sec.isBlank())p.setProperty("alpaca.secret",sec); if(!k.isBlank()&&!sec.isBlank())p.setProperty("provider","ALPACA"); return p; }
   static String[] alpacaConnection(Properties p){String provider=p.getProperty("provider","YAHOO");String key=p.getProperty("alpaca.key",""),secret=p.getProperty("alpaca.secret","");if(!provider.equals("ALPACA"))return new String[]{"FALLBACK","Yahoo selected"};if(key.isBlank()||secret.isBlank())return new String[]{"MISSING","Alpaca credentials are incomplete"};try{HttpResponse<String> r=alpacaGet("https://data.alpaca.markets/v2/stocks/SPY/snapshot","iex");int c=r.statusCode();if(c==200)return new String[]{"CONNECTED","Authenticated Alpaca IEX snapshot available"};if(c==401||c==403)return new String[]{"AUTH_FAILED","Alpaca rejected the API credentials (HTTP "+c+")"};if(c==429)return new String[]{"RATE_LIMITED","Alpaca rate limit reached; Yahoo candle fallback remains active"};if(c==404||c==204)return new String[]{"NO_DATA","Alpaca authenticated but returned no snapshot data"};return new String[]{"FALLBACK","Alpaca returned HTTP "+c+"; Yahoo fallback remains active"};}catch(Exception e){return new String[]{"FALLBACK","Alpaca connection unavailable: "+(e.getMessage()==null?"request failed":e.getMessage())};}}
   static void marketSettingsGet(HttpExchange x)throws Exception{Properties p=marketSettings();String provider=p.getProperty("provider","YAHOO");boolean configured=!p.getProperty("alpaca.key","").isBlank()&&!p.getProperty("alpaca.secret","").isBlank();String[] c=alpacaConnection(p);json(x,200,"{\"provider\":"+q(provider)+",\"alpacaConfigured\":"+configured+",\"fallback\":\"YAHOO\",\"connection\":"+q(c[0])+",\"detail\":"+q(c[1])+"}");}
-  static void marketSettingsSave(HttpExchange x)throws Exception{Map<String,String>f=form(x);Properties p=marketSettings();String key=f.getOrDefault("key","").trim(),secret=f.getOrDefault("secret","").trim();String provider=f.getOrDefault("provider",p.getProperty("provider","YAHOO")).toUpperCase(Locale.ROOT);if(!key.isBlank()&&!secret.isBlank())provider="ALPACA";if(!provider.equals("YAHOO")&&!provider.equals("ALPACA"))throw new Exception("Provider must be YAHOO or ALPACA");p.setProperty("provider",provider);if(!key.isBlank())p.setProperty("alpaca.key",key);if(!secret.isBlank())p.setProperty("alpaca.secret",secret);if("true".equalsIgnoreCase(f.getOrDefault("clear","false"))){p.remove("alpaca.key");p.remove("alpaca.secret");p.setProperty("provider","YAHOO");provider="YAHOO";}Files.createDirectories(DATA);Path tmp=SETTINGS.resolveSibling("settings.properties.tmp");try(OutputStream out=Files.newOutputStream(tmp)){p.store(out,"MarketLedger Pro local settings - keep private");}try{Files.move(tmp,SETTINGS,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException e){Files.move(tmp,SETTINGS,StandardCopyOption.REPLACE_EXISTING);}p=marketSettings();String[] c=alpacaConnection(p);boolean configured=!p.getProperty("alpaca.key","").isBlank()&&!p.getProperty("alpaca.secret","").isBlank();json(x,200,"{\"ok\":true,\"provider\":"+q(p.getProperty("provider","YAHOO"))+",\"alpacaConfigured\":"+configured+",\"connection\":"+q(c[0])+",\"detail\":"+q(c[1])+"}");}
+  static void marketSettingsSave(HttpExchange x)throws Exception{Map<String,String>f=form(x);Properties p=marketSettings();String key=f.getOrDefault("key","").trim(),secret=f.getOrDefault("secret","").trim();String provider=f.getOrDefault("provider",p.getProperty("provider","YAHOO")).toUpperCase(Locale.ROOT);if(!key.isBlank()&&!secret.isBlank())provider="ALPACA";if(!provider.equals("YAHOO")&&!provider.equals("ALPACA"))throw new Exception("Provider must be YAHOO or ALPACA");p.setProperty("provider",provider);if(!key.isBlank())p.setProperty("alpaca.key",key);if(!secret.isBlank())p.setProperty("alpaca.secret",secret);if("true".equalsIgnoreCase(f.getOrDefault("clear","false"))){p.remove("alpaca.key");p.remove("alpaca.secret");p.setProperty("provider","YAHOO");provider="YAHOO";}Files.createDirectories(DATA);Path tmp=SETTINGS.resolveSibling("settings.properties.tmp");try(OutputStream out=Files.newOutputStream(tmp)){p.store(out,"MarketLedger Pro local settings - keep private");}try{Files.move(tmp,SETTINGS,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException e){Files.move(tmp,SETTINGS,StandardCopyOption.REPLACE_EXISTING);}persistFile(SETTINGS);p=marketSettings();String[] c=alpacaConnection(p);boolean configured=!p.getProperty("alpaca.key","").isBlank()&&!p.getProperty("alpaca.secret","").isBlank();json(x,200,"{\"ok\":true,\"provider\":"+q(p.getProperty("provider","YAHOO"))+",\"alpacaConfigured\":"+configured+",\"connection\":"+q(c[0])+",\"detail\":"+q(c[1])+"}");}
   static HttpResponse<String> alpacaGet(String url,String feed)throws Exception{Properties p=marketSettings();String key=p.getProperty("alpaca.key",""),secret=p.getProperty("alpaca.secret","");if(key.isBlank()||secret.isBlank())throw new Exception("Alpaca API key/secret not configured");String u=url+(url.contains("?")?"&":"?")+"feed="+URLEncoder.encode(feed,StandardCharsets.UTF_8);HttpClient c=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();return c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(12)).header("APCA-API-KEY-ID",key).header("APCA-API-SECRET-KEY",secret).header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());}
   static String jsonNum(String body,String key){var m=java.util.regex.Pattern.compile("\\\""+key+"\\\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)").matcher(body);return m.find()?m.group(1):"null";}
   static void microstructure(HttpExchange x,String raw)throws Exception{String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");Properties p=marketSettings();String provider=p.getProperty("provider","YAHOO");if(!provider.equals("ALPACA")){json(x,200,"{\"provider\":\"YAHOO\",\"available\":false,\"reason\":\"Configure Alpaca for bid/ask and overnight liquidity\"}");return;}String phase=marketPhaseServer();String feed=phase.equals("OVERNIGHT")?"overnight":"iex";HttpResponse<String> r=alpacaGet("https://data.alpaca.markets/v2/stocks/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"/snapshot",feed);if(r.statusCode()!=200){json(x,200,"{\"provider\":\"ALPACA\",\"available\":false,\"http\":"+r.statusCode()+"}");return;}String b=r.body(),bid=jsonNum(b,"bp"),ask=jsonNum(b,"ap"),bs=jsonNum(b,"bs"),as=jsonNum(b,"as"),last=jsonNum(b,"p"),barVol=jsonNum(b,"v");json(x,200,"{\"provider\":\"ALPACA\",\"available\":true,\"feed\":"+q(feed)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+"}");}
@@ -266,7 +307,7 @@ public class MarketLedger {
   static void writeCalls(List<Call>a)throws IOException{var l=new ArrayList<String>();for(var c:a)l.add(c.id+"\t"+en(c.symbol)+"\t"+en(c.direction)+"\t"+c.baseline+"\t"+c.threshold+"\t"+en(c.due)+"\t"+en(c.note)+"\t"+en(c.status)+"\t"+c.resolved+"\t"+c.move+"\t"+en(c.created)+"\t"+en(c.resolvedAt));atomic(CALLS,l);}
   static List<Note> readNotes()throws IOException{var a=new ArrayList<Note>();if(!Files.exists(NOTES))return a;for(String l:Files.readAllLines(NOTES)){if(l.isBlank())continue;String[]p=l.split("\\t",-1);a.add(new Note(Long.parseLong(p[0]),un(p[1]),un(p[2]),un(p[3]),un(p[4])));}return a;}
   static void writeNotes(List<Note>a)throws IOException{var l=new ArrayList<String>();for(var n:a)l.add(n.id+"\t"+en(n.title)+"\t"+en(n.body)+"\t"+en(n.tag)+"\t"+en(n.created));atomic(NOTES,l);}
-  static void atomic(Path p,List<String>l)throws IOException{Path t=p.resolveSibling(p.getFileName()+".tmp");Files.write(t,l,StandardCharsets.UTF_8);try{Files.move(t,p,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(Exception e){Files.move(t,p,StandardCopyOption.REPLACE_EXISTING);}}
+  static void atomic(Path p,List<String>l)throws IOException{Path t=p.resolveSibling(p.getFileName()+".tmp");Files.write(t,l,StandardCharsets.UTF_8);try{Files.move(t,p,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(Exception e){Files.move(t,p,StandardCopyOption.REPLACE_EXISTING);}persistFile(p);}
 
   static Map<String,String> form(HttpExchange x)throws IOException{String body=new String(x.getRequestBody().readAllBytes(),StandardCharsets.UTF_8);var m=new HashMap<String,String>();for(String z:body.split("&")){String[]p=z.split("=",2);if(p.length>0)m.put(URLDecoder.decode(p[0],StandardCharsets.UTF_8),p.length>1?URLDecoder.decode(p[1],StandardCharsets.UTF_8):"");}return m;}
   static String req(Map<String,String>m,String k)throws Exception{String v=m.get(k);if(v==null||v.isBlank())throw new Exception(k+" is required");return v.trim();}
@@ -299,7 +340,7 @@ public class MarketLedger {
       ZipEntry e; while((e=z.getNextEntry())!=null){String name=Paths.get(e.getName()).getFileName().toString();if(BACKUP_FILES.contains(name)){byte[] data=z.readNBytes(max+1);if(data.length>max)throw new Exception("Backup entry too large");incoming.put(name,data);}z.closeEntry();}
     }
     if(incoming.isEmpty())throw new Exception("No MarketLedger data files found in backup");
-    synchronized(LOCK){backupData();for(var e:incoming.entrySet()){Path dst=DATA.resolve(e.getKey()),tmp=DATA.resolve(e.getKey()+".restore.tmp");Files.write(tmp,e.getValue());try{Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException ex){Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING);}}}
+    synchronized(LOCK){backupData();for(var e:incoming.entrySet()){Path dst=DATA.resolve(e.getKey()),tmp=DATA.resolve(e.getKey()+".restore.tmp");Files.write(tmp,e.getValue());try{Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException ex){Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING);}persistFile(dst);}}
     json(x,200,"{\"ok\":true,\"restored\":"+incoming.size()+"}");
   }
 
