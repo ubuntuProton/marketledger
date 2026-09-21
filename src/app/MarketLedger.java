@@ -155,6 +155,7 @@ public class MarketLedger {
       if(p.equals("/api/export") && m.equals("GET")) { exportCsv(x); return; }
       if(p.equals("/api/backup") && m.equals("GET")) { downloadBackup(x); return; }
       if(p.equals("/api/backup/restore") && m.equals("POST")) { restoreBackup(x); return; }
+      if(p.equals("/api/migration/windows") && m.equals("POST")) { importWindowsData(x); return; }
       json(x,404,"{\"error\":\"Not found\"}");
     } catch(Exception e) { json(x,400,"{\"error\":"+q(e.getMessage()==null?"Request failed":e.getMessage())+"}"); }
   }
@@ -342,6 +343,53 @@ public class MarketLedger {
     if(incoming.isEmpty())throw new Exception("No MarketLedger data files found in backup");
     synchronized(LOCK){backupData();for(var e:incoming.entrySet()){Path dst=DATA.resolve(e.getKey()),tmp=DATA.resolve(e.getKey()+".restore.tmp");Files.write(tmp,e.getValue());try{Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException ex){Files.move(tmp,dst,StandardCopyOption.REPLACE_EXISTING);}persistFile(dst);}}
     json(x,200,"{\"ok\":true,\"restored\":"+incoming.size()+"}");
+  }
+
+  static void importWindowsData(HttpExchange x)throws Exception{
+    int max=50*1024*1024; byte[] raw=x.getRequestBody().readNBytes(max+1); if(raw.length>max)throw new Exception("Migration ZIP is larger than 50 MB");
+    Map<String,byte[]> incoming=new HashMap<>();
+    try(ZipInputStream z=new ZipInputStream(new ByteArrayInputStream(raw),StandardCharsets.UTF_8)){
+      ZipEntry e; while((e=z.getNextEntry())!=null){String name=Paths.get(e.getName()).getFileName().toString();if(BACKUP_FILES.contains(name)){byte[] data=z.readNBytes(max+1);if(data.length>max)throw new Exception("Migration entry too large");incoming.put(name,data);}z.closeEntry();}
+    }
+    if(incoming.isEmpty())throw new Exception("No MarketLedger Windows data files found in ZIP");
+    int stocks=0,calls=0,notes=0,events=0,signals=0;
+    synchronized(LOCK){
+      backupData();
+      if(incoming.containsKey("stocks.tsv")) stocks=mergeStocks(incoming.get("stocks.tsv"));
+      if(incoming.containsKey("calls.tsv")) calls=mergeIdFile(CALLS,incoming.get("calls.tsv"));
+      if(incoming.containsKey("notes.tsv")) notes=mergeIdFile(NOTES,incoming.get("notes.tsv"));
+      if(incoming.containsKey("events.tsv")) events=mergeIdFile(EVENTS,incoming.get("events.tsv"));
+      if(incoming.containsKey("signals.tsv")) signals=mergeSignals(incoming.get("signals.tsv"));
+      for(Path f:List.of(STOCKS,CALLS,NOTES,EVENTS,SIGNALS)) if(Files.exists(f))persistFile(f);
+    }
+    json(x,200,"{\"ok\":true,\"stocks\":"+stocks+",\"calls\":"+calls+",\"notes\":"+notes+",\"events\":"+events+",\"signals\":"+signals+",\"message\":\"Windows data merged into PostgreSQL\"}");
+  }
+  static List<String> cleanLines(byte[] b){
+    String t=new String(b,StandardCharsets.UTF_8); List<String> out=new ArrayList<>();
+    for(String line:t.split("\\R"))if(!line.isBlank())out.add(line); return out;
+  }
+  static void writeLines(Path f,List<String> lines)throws IOException{
+    String text=lines.isEmpty()?"":String.join(System.lineSeparator(),lines)+System.lineSeparator();
+    Path tmp=DATA.resolve(f.getFileName()+".merge.tmp");Files.writeString(tmp,text,StandardCharsets.UTF_8);
+    try{Files.move(tmp,f,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);}catch(AtomicMoveNotSupportedException e){Files.move(tmp,f,StandardCopyOption.REPLACE_EXISTING);}
+  }
+  static int mergeStocks(byte[] b)throws IOException{
+    List<String> cur=Files.exists(STOCKS)?Files.readAllLines(STOCKS,StandardCharsets.UTF_8):new ArrayList<>();Set<String> keys=new HashSet<>();
+    for(String l:cur){String[] a=l.split("\\t",-1);if(a.length>0)keys.add(un(a[0]).toUpperCase(Locale.ROOT));}
+    int added=0;for(String l:cleanLines(b)){String[] a=l.split("\\t",-1);if(a.length<1)continue;String k=un(a[0]).toUpperCase(Locale.ROOT);if(!k.isBlank()&&keys.add(k)){cur.add(l);added++;}}
+    writeLines(STOCKS,cur);return added;
+  }
+  static int mergeSignals(byte[] b)throws IOException{
+    List<String> cur=Files.exists(SIGNALS)?Files.readAllLines(SIGNALS,StandardCharsets.UTF_8):new ArrayList<>();Set<String> keys=new HashSet<>();long maxId=0;
+    for(String l:cur){String[] a=l.split("\\t",-1);if(a.length>2){keys.add(un(a[1]).toUpperCase(Locale.ROOT)+"|"+a[2]);try{maxId=Math.max(maxId,Long.parseLong(a[0]));}catch(Exception ignored){}}}
+    int added=0;for(String l:cleanLines(b)){String[] a=l.split("\\t",-1);if(a.length<3)continue;String k=un(a[1]).toUpperCase(Locale.ROOT)+"|"+a[2];if(keys.add(k)){a[0]=Long.toString(++maxId);cur.add(String.join("\t",a));added++;}}
+    writeLines(SIGNALS,cur);return added;
+  }
+  static int mergeIdFile(Path f,byte[] b)throws IOException{
+    List<String> cur=Files.exists(f)?Files.readAllLines(f,StandardCharsets.UTF_8):new ArrayList<>();Set<String> bodies=new HashSet<>();long maxId=0;
+    for(String l:cur){String[] a=l.split("\\t",-1);if(a.length>0){try{maxId=Math.max(maxId,Long.parseLong(a[0]));}catch(Exception ignored){}bodies.add(l.substring(l.indexOf('\t')>=0?l.indexOf('\t')+1:l.length()));}}
+    int added=0;for(String l:cleanLines(b)){int tab=l.indexOf('\t');String body=tab>=0?l.substring(tab+1):l;if(!body.isBlank()&&bodies.add(body)){cur.add((++maxId)+"\t"+body);added++;}}
+    writeLines(f,cur);return added;
   }
 
   static byte[] resource(String n)throws IOException{try(InputStream in=MarketLedger.class.getResourceAsStream(n)){if(in==null)throw new FileNotFoundException(n);return in.readAllBytes();}}
