@@ -1,0 +1,6 @@
+MarketLedger Pro V5L.2.1 — Runtime UI helper hotfix
+
+Fixes the browser-side analysis crash: "technicalContext is not defined".
+Restores the helper functions used by the live board: technical context, reason attribution display, freshness, extended-volume display, top setup queue, and failure display.
+Includes the V5L.2 PostgreSQL Instant/timestamp and targeted signal-upsert fixes.
+No scoring thresholds or Opening Intelligence weights changed.
