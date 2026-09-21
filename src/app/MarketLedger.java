@@ -56,7 +56,7 @@ public class MarketLedger {
     server.createContext("/", MarketLedger::route);
     server.setExecutor(Executors.newCachedThreadPool()); server.start();
     startOutcomeWorker();
-    startEarningsWorker();
+    startCorporateCalendarWorker();
     System.out.println("Market Ledger running at http://localhost:"+PORT);
     System.out.println("Data folder: "+DATA.toAbsolutePath());
     if(System.getenv("RENDER")==null){
@@ -178,6 +178,112 @@ public class MarketLedger {
 
   record EarningsHit(String symbol,long epoch,boolean estimated,String source) {}
   record EarningsSyncResult(int checked,int found,int changed,int failed,List<String> failures) {}
+  record IpoHit(String symbol,String name,LocalDate date,String priceRange,String source) {}
+  record CorporateSyncResult(EarningsSyncResult earnings,int ipoFound,int ipoChanged,int ipoFailed,List<String> ipoFailures) {}
+
+  static void startCorporateCalendarWorker(){
+    var scheduler=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"marketledger-corporate-calendar");t.setDaemon(true);return t;});
+    scheduler.scheduleWithFixedDelay(()->{
+      try{
+        CorporateSyncResult r=syncCorporateCalendar();
+        System.out.println("Corporate calendar: earnings found="+r.earnings.found+" IPOs found="+r.ipoFound+
+          " earnings failures="+r.earnings.failed+" IPO failures="+r.ipoFailed);
+      }catch(Throwable e){System.err.println("Corporate calendar warning: "+e.getMessage());}
+    },45,21600,TimeUnit.SECONDS);
+    System.out.println("Corporate calendar: scheduled every 6 hours");
+  }
+
+  static void syncCorporateEndpoint(HttpExchange x)throws Exception{
+    CorporateSyncResult r=syncCorporateCalendar();
+    StringBuilder ef=new StringBuilder("[");
+    for(int i=0;i<Math.min(5,r.earnings.failures.size());i++){if(i>0)ef.append(",");ef.append("\"").append(esc(r.earnings.failures.get(i))).append("\"");}
+    ef.append("]");
+    StringBuilder ipf=new StringBuilder("[");
+    for(int i=0;i<Math.min(5,r.ipoFailures.size());i++){if(i>0)ipf.append(",");ipf.append("\"").append(esc(r.ipoFailures.get(i))).append("\"");}
+    ipf.append("]");
+    boolean av=System.getenv("ALPHA_VANTAGE_API_KEY")!=null&&!System.getenv("ALPHA_VANTAGE_API_KEY").isBlank();
+    json(x,200,"{\"ok\":true,\"alphaVantageConfigured\":"+av+
+      ",\"earnings\":{\"checked\":"+r.earnings.checked+",\"found\":"+r.earnings.found+",\"updated\":"+r.earnings.changed+
+      ",\"failed\":"+r.earnings.failed+",\"failures\":"+ef+"}"+
+      ",\"ipos\":{\"found\":"+r.ipoFound+",\"updated\":"+r.ipoChanged+",\"failed\":"+r.ipoFailed+",\"failures\":"+ipf+"}}");
+  }
+
+  static CorporateSyncResult syncCorporateCalendar() throws Exception{
+    EarningsSyncResult er=syncUpcomingEarnings();
+    int ipoChanged=0; var ipoFailures=new ArrayList<String>(); var ipos=new ArrayList<IpoHit>();
+    String key=System.getenv("ALPHA_VANTAGE_API_KEY");
+    if(key!=null&&!key.isBlank()){
+      try{ipos.addAll(fetchAlphaVantageIpos(key));}
+      catch(Exception e){ipoFailures.add("Alpha Vantage IPO: "+e.getMessage());}
+    }else ipoFailures.add("Alpha Vantage IPO: ALPHA_VANTAGE_API_KEY not configured");
+
+    synchronized(LOCK){
+      var es=dedupeEvents(readEvents());
+      long next=es.stream().mapToLong(Event::id).max().orElse(0)+1;
+      long nowMs=System.currentTimeMillis();
+      for(var h:ipos){
+        long eventMs=h.date.atTime(9,30).atZone(ZoneId.of("America/New_York")).toInstant().toEpochMilli();
+        if(eventMs<nowMs-24L*60*60*1000||eventMs>nowMs+95L*24*60*60*1000)continue;
+        String scope=(h.symbol==null||h.symbol.isBlank())?"ALL":h.symbol;
+        String when=h.date+" 09:30";
+        String pr=(h.priceRange==null||h.priceRange.isBlank())?"":" • Price "+h.priceRange;
+        String title="Upcoming IPO • "+h.name+pr+" • auto-synced • "+h.source;
+        Event old=es.stream().filter(e->e.type.equalsIgnoreCase("IPO")&&e.scope.equalsIgnoreCase(scope)&&e.title.contains("auto-synced")).findFirst().orElse(null);
+        if(old!=null){
+          if(!old.when.equals(when)||!old.title.equals(title)){
+            int idx=es.indexOf(old);es.set(idx,new Event(old.id,when,"IPO","MEDIUM",scope,title,old.created));ipoChanged++;
+          }
+        }else{es.add(new Event(next++,when,"IPO","MEDIUM",scope,title,now()));ipoChanged++;}
+      }
+      es=dedupeEvents(es); es.sort(Comparator.comparing(Event::when)); writeEvents(es);
+    }
+    return new CorporateSyncResult(er,ipos.size(),ipoChanged,ipoFailures.size(),ipoFailures);
+  }
+
+  static List<IpoHit> fetchAlphaVantageIpos(String key)throws Exception{
+    String u="https://www.alphavantage.co/query?function=IPO_CALENDAR&apikey="+URLEncoder.encode(key,StandardCharsets.UTF_8);
+    String body=fetchAlphaCsv(u,"IPO_CALENDAR");
+    String[] lines=body.split("\\R");
+    if(lines.length<2)return List.of();
+    String[] hdr=parseCsvLine(lines[0]);
+    int si=col(hdr,"symbol"), ni=col(hdr,"name"), di=col(hdr,"ipoDate","ipo_date","date"),
+        lo=col(hdr,"priceRangeLow","price_range_low"), hi=col(hdr,"priceRangeHigh","price_range_high");
+    if(di<0)throw new IOException("CSV missing IPO date column; header="+lines[0]);
+    var out=new ArrayList<IpoHit>();
+    for(int i=1;i<lines.length;i++){
+      String[] f=parseCsvLine(lines[i]); if(f.length<=di)continue;
+      try{
+        LocalDate d=LocalDate.parse(f[di].trim());
+        String sym=si>=0&&si<f.length?f[si].trim():"";
+        String name=ni>=0&&ni<f.length?f[ni].trim():sym;
+        String range="";
+        if(lo>=0&&hi>=0&&lo<f.length&&hi<f.length&&!f[lo].isBlank()&&!f[hi].isBlank())range="$"+f[lo].trim()+"–$"+f[hi].trim();
+        out.add(new IpoHit(sym,name,d,range,"Alpha Vantage"));
+      }catch(Exception ignored){}
+    }
+    return out;
+  }
+
+  static int col(String[] h,String... names){
+    for(int i=0;i<h.length;i++)for(String n:names)
+      if(h[i].replace("_","").replace(" ","").equalsIgnoreCase(n.replace("_","").replace(" ","")))return i;
+    return -1;
+  }
+
+  static String fetchAlphaCsv(String u,String label)throws Exception{
+    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
+    HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(20))
+      .header("User-Agent","MarketLedger/3.0").GET().build(),HttpResponse.BodyHandlers.ofString());
+    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
+    String body=r.body()==null?"":r.body().trim();
+    if(body.isBlank())throw new IOException("empty response");
+    if(body.startsWith("{")){
+      String compact=body.replaceAll("\\s+"," ");
+      throw new IOException("provider notice: "+compact.substring(0,Math.min(180,compact.length())));
+    }
+    if(!body.contains(","))throw new IOException("unexpected non-CSV response");
+    return body;
+  }
 
   static void startEarningsWorker(){
     var scheduler=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"marketledger-earnings");t.setDaemon(true);return t;});
@@ -260,27 +366,19 @@ public class MarketLedger {
   }
 
   static List<EarningsHit> fetchAlphaVantageCalendar(String key,List<Stock> stocks)throws Exception{
-    var wanted=new HashSet<String>();
-    for(var st:stocks)wanted.add(st.symbol.toUpperCase(Locale.ROOT));
-    String u="https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey="+
-      URLEncoder.encode(key,StandardCharsets.UTF_8);
-    HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
-    HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(15))
-      .header("User-Agent","MarketLedger/2.8").GET().build(),HttpResponse.BodyHandlers.ofString());
-    if(r.statusCode()!=200)throw new IOException("HTTP "+r.statusCode());
-    String body=r.body()==null?"":r.body().trim();
-    if(body.startsWith("{"))throw new IOException("provider returned JSON notice instead of earnings CSV");
-    String[] lines=body.split("\\R");
-    if(lines.length<2||!lines[0].toLowerCase(Locale.ROOT).contains("reportdate"))
-      throw new IOException("unexpected CSV response");
+    var wanted=new HashSet<String>(); for(var st:stocks)wanted.add(st.symbol.toUpperCase(Locale.ROOT));
+    String u="https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey="+URLEncoder.encode(key,StandardCharsets.UTF_8);
+    String body=fetchAlphaCsv(u,"EARNINGS_CALENDAR");
+    String[] lines=body.split("\\R"); if(lines.length<2)return List.of();
+    String[] hdr=parseCsvLine(lines[0]);
+    int si=col(hdr,"symbol"), di=col(hdr,"reportDate","report_date","date");
+    if(si<0||di<0)throw new IOException("CSV missing symbol/reportDate; header="+lines[0]);
     var out=new ArrayList<EarningsHit>();
     for(int i=1;i<lines.length;i++){
-      String[] f=parseCsvLine(lines[i]);
-      if(f.length<3)continue;
-      String sym=f[0].trim().toUpperCase(Locale.ROOT);
-      if(!wanted.contains(sym))continue;
+      String[] f=parseCsvLine(lines[i]); if(f.length<=Math.max(si,di))continue;
+      String sym=f[si].trim().toUpperCase(Locale.ROOT); if(!wanted.contains(sym))continue;
       try{
-        LocalDate d=LocalDate.parse(f[2].trim());
+        LocalDate d=LocalDate.parse(f[di].trim());
         long epoch=d.atTime(12,0).atZone(ZoneId.of("America/New_York")).toEpochSecond();
         out.add(new EarningsHit(sym,epoch,true,"Alpha Vantage"));
       }catch(Exception ignored){}
@@ -414,6 +512,7 @@ public class MarketLedger {
       if(p.equals("/api/events") && m.equals("POST")) { addEvent(x); return; }
       if(p.equals("/api/context/schwab/sync") && m.equals("POST")) { syncSchwab(x); return; }
       if(p.equals("/api/context/earnings/sync") && m.equals("POST")) { syncEarningsEndpoint(x); return; }
+      if(p.equals("/api/context/corporate/sync") && m.equals("POST")) { syncCorporateEndpoint(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("GET")) { marketSettingsGet(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
