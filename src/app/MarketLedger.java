@@ -49,7 +49,7 @@ public class MarketLedger {
   record Note(long id,String title,String body,String tag,String created) {}
   record Event(long id,String when,String type,String impact,String scope,String title,String created) {}
   record Signal(long id,String symbol,long candleTs,String captured,double price,String signal,int score,String phase,double rsi,double vwap,double trend,double volRatio,double atrPct,double spreadPct,String marketText,String eventText,double r15,double r30,double r60) {}
-  record NewsItem(String title,String link,String source,String published,List<String> symbols,String theme,int sourceScore) {}
+  record NewsItem(String title,String link,String source,String published,List<String> symbols,String theme,int sourceScore,int relevanceScore) {}
   static volatile String NEWS_CACHE_JSON = "{\"items\":[],\"themes\":[],\"updated\":null}";
   static volatile long NEWS_CACHE_AT = 0L;
   static volatile String NEWS_CACHE_KEY = "";
@@ -968,7 +968,9 @@ public class MarketLedger {
     List<String> list=new ArrayList<>(syms); List<NewsItem> items=new ArrayList<>();
     for(int start=0;start<list.size();start+=8){
       List<String> batch=list.subList(start,Math.min(start+8,list.size()));
-      String expr=String.join(" OR ",batch)+" when:1d";
+      List<String> terms=new ArrayList<>();
+      for(String symbol:batch){String alias=newsAlias(symbol);terms.add("\""+(alias.isBlank()?symbol:alias)+"\"");}
+      String expr=String.join(" OR ",terms)+" when:1d";
       String url="https://news.google.com/rss/search?q="+URLEncoder.encode(expr,StandardCharsets.UTF_8)+"&hl=en-US&gl=US&ceid=US:en";
       try{
         HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(7)).build();
@@ -977,25 +979,43 @@ public class MarketLedger {
       }catch(Exception e){System.err.println("News catalyst warning: "+e.getMessage());}
     }
     LinkedHashMap<String,NewsItem> uniq=new LinkedHashMap<>();
-    items.stream().sorted(Comparator.comparingInt(NewsItem::sourceScore).reversed()).forEach(n->uniq.putIfAbsent(n.title().toLowerCase(Locale.ROOT),n));
+    items.stream().sorted(Comparator.comparingInt((NewsItem n)->n.sourceScore()+n.relevanceScore()).reversed()).forEach(n->uniq.putIfAbsent(newsDedupeKey(n.title()),n));
     items=new ArrayList<>(uniq.values()); if(items.size()>24)items=items.subList(0,24);
     Map<String,Integer> themes=new LinkedHashMap<>(); for(NewsItem n:items)themes.merge(n.theme(),1,Integer::sum);
     StringBuilder b=new StringBuilder("{\"updated\":").append(q(Instant.now().toString())).append(",\"mode\":\"PUBLIC_WEB\",\"notice\":\"Public headline intelligence; Reuters/LSEG professional feeds require separate entitlement. News is context, not a trading instruction.\",\"themes\":[");
     int ti=0;for(var e:themes.entrySet().stream().sorted((a,z)->Integer.compare(z.getValue(),a.getValue())).limit(6).toList()){if(ti++>0)b.append(',');b.append("{\"name\":").append(q(e.getKey())).append(",\"stories\":").append(e.getValue()).append('}');}
-    b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
+    b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"relevanceScore\":").append(n.relevanceScore()).append(",\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
     NEWS_CACHE_KEY=key;NEWS_CACHE_AT=now;NEWS_CACHE_JSON=b.toString();json(x,200,NEWS_CACHE_JSON);
   }
   static List<NewsItem> parseNewsRss(String xml,Set<String> syms){
     List<NewsItem> out=new ArrayList<>(); var ip=java.util.regex.Pattern.compile("(?is)<item>(.*?)</item>"); var im=ip.matcher(xml);
     while(im.find()){String z=im.group(1),title=xmlTag(z,"title"),link=xmlTag(z,"link"),pub=xmlTag(z,"pubDate"),source=xmlTag(z,"source"); if(title.isBlank())continue;
       title=xmlDecode(title.replaceAll("(?is)<[^>]+>"," ")).replaceAll("\\s+"," ").trim(); source=xmlDecode(source.replaceAll("(?is)<[^>]+>"," ")).trim();
-      List<String> hits=new ArrayList<>();String u=(" "+title+" ").toUpperCase(Locale.ROOT);for(String s:syms){String alias=newsAlias(s);if(u.matches(".*(?:^|[^A-Z0-9])"+java.util.regex.Pattern.quote(s)+"(?:[^A-Z0-9]|$).*")||u.contains(" "+s+" ")||(!alias.isBlank()&&u.contains(alias)))hits.add(s);}
-      if(hits.isEmpty())continue;String low=title.toLowerCase(Locale.ROOT),theme=newsTheme(low);int score=sourceScore(source);out.add(new NewsItem(title,link,source.isBlank()?"Public news":source,pub,hits,theme,score));
+      String upper=title.toUpperCase(Locale.ROOT), low=title.toLowerCase(Locale.ROOT);
+      if(newsJunk(low))continue;
+      List<String> hits=new ArrayList<>(); int relevance=0;
+      for(String symbol:syms){int r=newsSymbolRelevance(symbol,upper);if(r>0){hits.add(symbol);relevance=Math.max(relevance,r);}}
+      if(hits.isEmpty()||relevance<70)continue;
+      String theme=newsTheme(low);int score=sourceScore(source);out.add(new NewsItem(title,link,source.isBlank()?"Public news":source,pub,hits,theme,score,relevance));
     }return out;
   }
+  static int newsSymbolRelevance(String symbol,String upper){
+    String alias=newsAlias(symbol);
+    if(!alias.isBlank() && containsPhrase(upper,alias)) return 100;
+    // Short/common ticker strings are never accepted by themselves. This prevents BE="be", COIN=literal coin, ARM=body part, META=generic prefix, etc.
+    if(Set.of("BE","COIN","ARM","META","AI","ON","IT","ALL").contains(symbol)) return 0;
+    boolean ticker=java.util.regex.Pattern.compile("(?:^|[^A-Z0-9])(?:NASDAQ|NYSE|NYSEARCA)?\\s*[:(]?\\s*"+java.util.regex.Pattern.quote(symbol)+"\\s*[)]?(?:[^A-Z0-9]|$)").matcher(upper).find();
+    if(!ticker)return 0;
+    // Unambiguous 4+ character tickers can match, but require market/company context to avoid incidental acronyms.
+    String l=upper.toLowerCase(Locale.ROOT); boolean market=l.matches(".*(stock|shares|earnings|revenue|guidance|analyst|price target|nasdaq|nyse|investor|semiconductor|chip|data center|acquisition|partnership|contract|ipo|dividend|market cap).*" );
+    return market?78:0;
+  }
+  static boolean containsPhrase(String upper,String phrase){return java.util.regex.Pattern.compile("(?:^|[^A-Z0-9])"+java.util.regex.Pattern.quote(phrase)+"(?:[^A-Z0-9]|$)").matcher(upper).find();}
+  static boolean newsJunk(String low){return low.matches(".*(\\$?1,?000 invested.*worth|could be worth by|should you buy.*stock|prediction for|where will .* stock be|millionaire-maker|top .* stocks to buy|best stocks to buy).*" );}
+  static String newsDedupeKey(String title){return title.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]"," ").replaceAll("\\b(update|breaking|exclusive)\\b"," ").replaceAll("\\s+"," ").trim();}
   static String xmlTag(String s,String tag){var m=java.util.regex.Pattern.compile("(?is)<"+tag+"(?:\\s[^>]*)?>(.*?)</"+tag+">").matcher(s);return m.find()?m.group(1).trim():"";}
   static String xmlDecode(String s){return s.replace("<![CDATA[","").replace("]]>","").replace("&amp;","&").replace("&quot;","\\\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">");}
-  static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";default->"";};}
+  static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";case "ALAB"->"ASTERA LABS";case "CRDO"->"CREDO TECHNOLOGY";case "CRWV"->"COREWEAVE";case "NBIS"->"NEBIUS";case "TEM"->"TEMPUS AI";case "CLS"->"CELESTICA";case "ETN"->"EATON";case "GEV"->"GE VERNOVA";case "LEU"->"CENTRUS ENERGY";case "PSTG"->"PURE STORAGE";case "CRCL"->"CIRCLE INTERNET";default->"";};}
   static int sourceScore(String source){String s=source.toLowerCase(Locale.ROOT);if(s.contains("reuters"))return 100;if(s.contains("schwab"))return 95;if(s.contains("sec")||s.contains("business wire")||s.contains("globe newswire"))return 90;if(s.contains("cnbc")||s.contains("bloomberg")||s.contains("associated press"))return 85;return 60;}
   static String newsTheme(String s){if(s.matches(".*(ai|artificial intelligence|data center|datacenter|gpu|cpu|semiconductor|chip).*"))return "AI / Compute / Semiconductors";if(s.matches(".*(fed|rate|yield|inflation|cpi|jobs|payroll|treasury).*"))return "Rates / Macro";if(s.matches(".*(earnings|revenue|guidance|profit|forecast).*"))return "Earnings / Guidance";if(s.matches(".*(deal|acquisition|merger|partnership|contract).*"))return "Deals / Partnerships";if(s.matches(".*(bitcoin|crypto|ethereum).*"))return "Crypto";return "Company / Market News";}
 
