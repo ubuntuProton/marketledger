@@ -1,0 +1,9 @@
+MarketLedger Pro V5M.8.2.3 — Strict Entity Identity Guard
+
+- Fixes NET/Cloudflare collision: bare NET in phrases such as "net sales" is never accepted as Cloudflare.
+- Adds strict issuer identity handling for collision-prone NET, NOW, ON, IT, ALL and AI.
+- Adds issuer aliases for Cloudflare, ServiceNow, onsemi, Gartner, Allstate and C3.ai.
+- Expands institutional-ownership detection to headlines such as "State Street Corp Acquires 2,149,563 Shares of AMD" and equivalent purchase/13F wording.
+- Institutional ownership remains secondary context and cannot receive full DIRECT issuer-event treatment.
+- Preserves V5M.8.2.2 TSM/former-spinout protections, V5M.8.2.1 freshness guard and V5M.8.1 ETN/COHR/AAPL entity guards.
+- No changes to technical thresholds, BUY/STRONG thresholds, V5N.1 thresholds, PRE/session rules, watchlist membership, chase/spread/liquidity gates.

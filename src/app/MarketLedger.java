@@ -1135,6 +1135,20 @@ public class MarketLedger {
       boolean cohrCtx=java.util.regex.Pattern.compile("(?:NASDAQ\\s*[:(]?\\s*COHR|\\(COHR\\)|COHR\\s+(?:STOCK|SHARES|EARNINGS))").matcher(upper).find();
       return cohrCtx?92:0;
     }
+    // V5M.8.2.3 strict identity guard for common-word / collision-prone tickers.
+    // A bare ticker token is not enough (for example NET in "net sales", NOW in ordinary prose, or ON as a preposition).
+    if(Set.of("NET","NOW","ON","IT","ALL","AI").contains(symbol)){
+      String issuer=switch(symbol){
+        case "NET"->"CLOUDFLARE"; case "NOW"->"SERVICENOW"; case "ON"->"ONSEMI";
+        case "IT"->"GARTNER"; case "ALL"->"ALLSTATE"; case "AI"->"C3.AI"; default->"";
+      };
+      boolean issuerCtx=!issuer.isBlank() && containsPhrase(upper,issuer);
+      if(symbol.equals("ON") && (containsPhrase(upper,"ON SEMICONDUCTOR")||containsPhrase(upper,"ON SEMICONDUCTOR CORPORATION")))issuerCtx=true;
+      if(symbol.equals("AI") && (containsPhrase(upper,"C3 AI")||containsPhrase(upper,"C3.AI, INC")||containsPhrase(upper,"C3.AI INC")))issuerCtx=true;
+      boolean explicitTicker=java.util.regex.Pattern.compile("(?:NASDAQ|NYSE)\\s*[:(]?\\s*"+java.util.regex.Pattern.quote(symbol)+"(?:\\)|\\s+(?:STOCK|SHARES|EARNINGS|REVENUE|GUIDANCE)|(?:[^A-Z0-9]|$))").matcher(upper).find()
+        || java.util.regex.Pattern.compile("\\("+java.util.regex.Pattern.quote(symbol)+"\\)").matcher(upper).find();
+      return issuerCtx?100:(explicitTicker?92:0);
+    }
     // AAPL needs issuer context because bare "Apple" also appears in awards, food, agriculture, schools, etc.
     if(symbol.equals("AAPL") && containsPhrase(upper,"APPLE")){
       String l=upper.toLowerCase(Locale.ROOT);
@@ -1186,7 +1200,7 @@ public class MarketLedger {
   static String newsDirectness(String low,List<String> hits,String evidence){
     if(evidence.equals("ANALYST"))return "ANALYST";
     if(low.matches(".*(spun off from|spinoff from|spinout|spin-out|former .* subsidiary|formerly .* unit|ex-.* subsidiary).*"))return "FORMER_SPINOUT";
-    if(low.matches(".*(top portfolio holding|portfolio holding|shares acquired by|shares purchased by|increases? (its )?(stake|position|holdings)|decreases? (its )?(stake|position|holdings)|cuts? (its )?(stake|position|holdings)|sells? .* shares|buys? .* shares|institutional investor|institutional ownership|fund .* holding|asset manager .* stake).*"))return "INSTITUTIONAL_OWNERSHIP";
+    if(low.matches(".*(top portfolio holding|portfolio holding|shares acquired by|shares purchased by|acquires? [0-9,]+ shares of|purchases? [0-9,]+ shares of|buys? [0-9,]+ shares of|adds? [0-9,]+ shares of|increases? (its )?(stake|position|holdings)|decreases? (its )?(stake|position|holdings)|cuts? (its )?(stake|position|holdings)|sells? .* shares|buys? .* shares|institutional investor|institutional ownership|fund .* holding|asset manager .* stake|13f .* (stake|position|holding)).*"))return "INSTITUTIONAL_OWNERSHIP";
     if(low.matches(".*(backed|portfolio company|supplier to|customer of|partner of).*"))return "INDIRECT";
     if(hits.size()>1 || low.matches(".*(stocks? .* in focus|market today|wall st|s&p 500|nasdaq|dow .* (rise|fall|gain|loss)|sector .* (rise|fall|gain|loss)).*"))return "MARKET_CONTEXT";
     return "DIRECT";
@@ -1298,7 +1312,7 @@ public class MarketLedger {
   static String newsDedupeKey(String title){return title.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]"," ").replaceAll("\\b(update|breaking|exclusive)\\b"," ").replaceAll("\\s+"," ").trim();}
   static String xmlTag(String s,String tag){var m=java.util.regex.Pattern.compile("(?is)<"+tag+"(?:\\s[^>]*)?>(.*?)</"+tag+">").matcher(s);return m.find()?m.group(1).trim():"";}
   static String xmlDecode(String s){return s.replace("<![CDATA[","").replace("]]>","").replace("&amp;","&").replace("&quot;","\\\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">");}
-  static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";case "ALAB"->"ASTERA LABS";case "CRDO"->"CREDO TECHNOLOGY";case "CRWV"->"COREWEAVE";case "NBIS"->"NEBIUS";case "TEM"->"TEMPUS AI";case "CLS"->"CELESTICA";case "ETN"->"EATON";case "GEV"->"GE VERNOVA";case "LEU"->"CENTRUS ENERGY";case "PSTG"->"PURE STORAGE";case "CRCL"->"CIRCLE INTERNET";default->"";};}
+  static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";case "ALAB"->"ASTERA LABS";case "CRDO"->"CREDO TECHNOLOGY";case "CRWV"->"COREWEAVE";case "NBIS"->"NEBIUS";case "TEM"->"TEMPUS AI";case "CLS"->"CELESTICA";case "ETN"->"EATON";case "GEV"->"GE VERNOVA";case "LEU"->"CENTRUS ENERGY";case "PSTG"->"PURE STORAGE";case "CRCL"->"CIRCLE INTERNET";case "NET"->"CLOUDFLARE";case "NOW"->"SERVICENOW";case "ON"->"ONSEMI";case "IT"->"GARTNER";case "ALL"->"ALLSTATE";case "AI"->"C3.AI";default->"";};}
   static int sourceScore(String source){String s=source.toLowerCase(Locale.ROOT);if(s.contains("reuters"))return 100;if(s.contains("schwab"))return 95;if(s.contains("sec")||s.contains("business wire")||s.contains("globe newswire"))return 90;if(s.contains("cnbc")||s.contains("bloomberg")||s.contains("associated press"))return 85;if(s.contains("barron"))return 82;if(s.contains("yahoo finance")||s.contains("marketwatch"))return 78;if(s.contains("thestreet")||s.contains("the street")||s.contains("benzinga"))return 74;return 60;}
   static String newsTheme(String s){if(s.matches(".*(investigation|lawsuit|settlement|recall|ban|approval|antitrust|export control).*"))return "Legal / Regulatory";if(s.matches(".*(earnings|revenue|guidance|profit|eps|sales).*"))return "Earnings / Guidance";if(s.matches(".*(acquisition|merger|partnership|contract|buyout|stake|investment).*"))return "Deals / Partnerships";if(s.matches(".*(ai|artificial intelligence|data center|datacenter|gpu|cpu|semiconductor|chip).*"))return "AI / Compute / Semiconductors";if(s.matches(".*(fed|rate|yield|inflation|cpi|jobs|payroll|treasury).*"))return "Rates / Macro";if(s.matches(".*(bitcoin|crypto|ethereum).*"))return "Crypto";return "Company / Market News";}
 
