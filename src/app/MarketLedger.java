@@ -1004,6 +1004,7 @@ public class MarketLedger {
       List<String> hits=new ArrayList<>(); int relevance=0;
       for(String symbol:syms){int r=newsSymbolRelevance(symbol,upper);if(r>0){hits.add(symbol);relevance=Math.max(relevance,r);}}
       if(hits.isEmpty()||relevance<70)continue;
+      hits=filterSubjectOwnership(low,hits); if(hits.isEmpty())continue;
       String novelty=newsNovelty(low), provenance=newsProvenance(low);
       if(novelty.equals("REJECTED"))continue;
       String evidence=newsEvidence(low,source), directness=newsDirectness(low,hits);
@@ -1021,17 +1022,26 @@ public class MarketLedger {
     }
     if(!alias.isBlank() && containsPhrase(upper,alias)) return 100;
     // Short/common ticker strings are never accepted by themselves. This prevents BE="be", COIN=literal coin, ARM=body part, META=generic prefix, etc.
-    if(Set.of("BE","COIN","ARM","META","AI","ON","IT","ALL").contains(symbol)) return 0;
+    if(Set.of("BE","COIN","ARM","META","AI","ON","IT","ALL","NOW").contains(symbol)) return 0;
     boolean ticker=java.util.regex.Pattern.compile("(?:^|[^A-Z0-9])(?:NASDAQ|NYSE|NYSEARCA)?\\s*[:(]?\\s*"+java.util.regex.Pattern.quote(symbol)+"\\s*[)]?(?:[^A-Z0-9]|$)").matcher(upper).find();
     if(!ticker)return 0;
     // Unambiguous 4+ character tickers can match, but require market/company context to avoid incidental acronyms.
     String l=upper.toLowerCase(Locale.ROOT); boolean market=l.matches(".*(stock|shares|earnings|revenue|guidance|analyst|price target|nasdaq|nyse|investor|semiconductor|chip|data center|acquisition|partnership|contract|ipo|dividend|market cap).*" );
     return market?78:0;
   }
+  static List<String> filterSubjectOwnership(String low,List<String> hits){
+    List<String> out=new ArrayList<>(hits);
+    // Headline subject ownership: references inside another company/IPOs story are exposure, not automatically a direct event.
+    if(out.contains("MSFT") && low.matches(".*(nscale|nscl).*ipo.*") && !low.matches(".*microsoft\\s+(announces|announced|signs|signed|launches|wins|acquires).*")) out.remove("MSFT");
+    // Retrospective performance content is never an issuer event even when the company name is exact.
+    if(low.matches(".*(if you invested|invested .* years ago|worth today|is now worth|since chatgpt launched|historical return|past .* years).*")) out.clear();
+    return out;
+  }
+
   static boolean containsPhrase(String upper,String phrase){return java.util.regex.Pattern.compile("(?:^|[^A-Z0-9])"+java.util.regex.Pattern.quote(phrase)+"(?:[^A-Z0-9]|$)").matcher(upper).find();}
 
   static String newsNovelty(String low){
-    if(low.matches(".*(best .* deals|deals you can shop|coupon|discount|review|how to|technical blog|stock forecast|price prediction|prediction:|where will .* stock|should you buy|is .* a buy|stocks to buy|stock flashes signal|beats stock market upswing|what investors need to know|analyst consensus explained|could be worth|parabolic).*"))return "REJECTED";
+    if(low.matches(".*(best .* deals|deals you can shop|coupon|discount|review|how to|technical blog|stock forecast|price prediction|prediction:|where will .* stock|should you buy|is .* a buy|stocks to buy|stock flashes signal|beats stock market upswing|what investors need to know|analyst consensus explained|could be worth|parabolic|if you invested|invested .* years ago|worth today|is now worth|since chatgpt launched|historical return|past .* years).*"))return "REJECTED";
     if(low.matches(".*(soars|surges|jumps|rallies|rally|rose|gains|climbs|falls|slides|drops|after .* rally|after .* surge|why .* stock|what drove|what happened).*"))return "COMMENTARY";
     if(low.matches(".*(today|announces|announced|reports|reported|files|filed|wins|won|signs|signed|launches|launched|unveils|unveiled|raises guidance|cuts guidance|approves|approved|acquires|acquired|merger|partnership|contract|order|settlement|lawsuit|investigation|upgrade|downgrade|price target).*"))return "NEW_CATALYST";
     if(low.matches(".*(earnings|guidance|revenue goal|revenue target|customer|supplier|capacity|shipment|production).*"))return "FOLLOW_THROUGH";
@@ -1064,7 +1074,9 @@ public class MarketLedger {
     if(evidence.equals("ANALYST"))return "MEDIUM";
     if(novelty.equals("COMMENTARY")||novelty.equals("BACKGROUND"))return "LOW";
     if(low.matches(".*(raises guidance|cuts guidance|earnings|revenue|profit|eps|acquisition|merger|buyout|major contract|wins .* contract|fda approval|recall|ban|antitrust|export control).*"))return "HIGH";
-    if(low.matches(".*(lawsuit|investigation|settlement|partnership|contract|order|launch|unveil|customer|supplier|capacity|production).*"))return "MEDIUM";
+    if(low.matches(".*(lawsuit|investigation|settlement|partnership|contract|order|customer|supplier|capacity|production).*"))return "MEDIUM";
+    // A product launch is not automatically market-material. Require strategic/economic scope; ordinary ecosystem launches stay low.
+    if(low.matches(".*(launch|unveil).*"))return low.matches(".*(data center|datacenter|ai infrastructure|platform|new chip|gpu|cpu|major|flagship).*" )?"MEDIUM":"LOW";
     return "MEDIUM";
   }
   static int catalystScore(String low,int source,int relevance,String published,String novelty,String evidence,String materiality,String directness){
@@ -1136,7 +1148,7 @@ public class MarketLedger {
     return String.join("+",sy)+"|"+action+"|"+distinctive;
   }
 
-  static boolean newsJunk(String low){return low.matches(".*(\\$?1,?000 invested.*worth|could be worth by|should you buy.*stock|prediction for|where will .* stock be|millionaire-maker|top .* stocks to buy|best stocks to buy|best .* deals|deals you can shop|coupon|discount).*" );}
+  static boolean newsJunk(String low){return low.matches(".*(\\$?1,?000 invested.*worth|could be worth by|should you buy.*stock|prediction for|where will .* stock be|millionaire-maker|top .* stocks to buy|best stocks to buy|best .* deals|deals you can shop|coupon|discount|if you invested|invested .* years ago|worth today|is now worth|since chatgpt launched|historical return|past .* years).*" );}
   static String newsDedupeKey(String title){return title.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]"," ").replaceAll("\\b(update|breaking|exclusive)\\b"," ").replaceAll("\\s+"," ").trim();}
   static String xmlTag(String s,String tag){var m=java.util.regex.Pattern.compile("(?is)<"+tag+"(?:\\s[^>]*)?>(.*?)</"+tag+">").matcher(s);return m.find()?m.group(1).trim():"";}
   static String xmlDecode(String s){return s.replace("<![CDATA[","").replace("]]>","").replace("&amp;","&").replace("&quot;","\\\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">");}

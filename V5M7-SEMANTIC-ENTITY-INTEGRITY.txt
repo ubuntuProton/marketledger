@@ -1,0 +1,9 @@
+MarketLedger Pro V5M.7 — Semantic Entity & Direct-Event Integrity
+
+Changes:
+- Protects ambiguous/common-word ticker NOW from incidental word matches.
+- Rejects retrospective investment-performance content ("if you invested", "worth today", "is now worth", "since ChatGPT launched", long-horizon historical-return articles).
+- Adds subject-ownership filtering so third-party IPO/context headlines do not automatically become direct MSFT corporate events.
+- Product-launch materiality now requires strategic/economic scope; ordinary ecosystem launches default to LOW materiality.
+- Preserves V5M.6 event clustering/source consensus and all existing technical BUY/STRONG thresholds.
+- News remains decision support and cannot create a technical BUY signal by itself.
