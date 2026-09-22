@@ -1,0 +1,34 @@
+MarketLedger Pro — V5P.2.4 PRE Session Independence
+
+Purpose
+-------
+Preserve the V5P.2.3 Yahoo pre-market candle pipeline fix while preventing missing overnight history from being presented as a PRE-session limitation once current pre-market candles are sufficient.
+
+Change
+------
+- During OVERNIGHT (20:00–04:00 ET), overnight candle availability continues to affect the Extended-Hours engine exactly as before.
+- During PRE (04:00–09:30 ET), the Extended-Hours engine evaluates the current pre-market candle set independently.
+- If overnight candles are available during PRE, they are retained as context only.
+- If overnight candles are unavailable during PRE, the engine records: "PRE evaluated independently from current pre-market candles" rather than "overnight feed unavailable/insufficient".
+- The prior +4 overnight-availability score bonus is no longer applied during PRE, so PRE scoring is not advantaged merely because overnight coverage exists.
+
+Unchanged
+---------
+- BUY / STRONG thresholds
+- V5N.1 Evidence Fusion scoring
+- V5M.7.1 news scoring/classification
+- market/sector confirmation
+- spread/liquidity gates
+- event gates
+- chase/extension gates
+- 58-stock universe
+- V5P.2.3 Yahoo PRE candle pipeline
+
+Validation
+----------
+During PRE, after at least 3 current pre-market 5-minute candles exist:
+1. Current candle age should remain current (normally 0–5 minutes when provider data is current).
+2. "Need at least 3 current extended-hours 5m candles" should not appear.
+3. Missing overnight data should not appear as "overnight feed unavailable/insufficient" in the final PRE reason.
+4. The details view should show PRE evaluated independently when overnight context is absent.
+5. Overnight behavior should remain unchanged before 04:00 ET.
