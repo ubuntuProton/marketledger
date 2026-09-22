@@ -912,6 +912,7 @@ public class MarketLedger {
       if(p.equals("/api/settings/marketdata") && m.equals("GET")) { marketSettingsGet(x); return; }
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
+      if(p.startsWith("/api/overnight-bars/") && m.equals("GET")) { overnightBars(x,p.substring("/api/overnight-bars/".length())); return; }
       if(p.matches("/api/notes/\\d+") && m.equals("DELETE")) { deleteNote(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.equals("/api/quotes/refresh") && m.equals("POST")) { refreshQuotes(x); return; }
       if(p.startsWith("/api/market/") && m.equals("GET")) { marketData(x,p.substring("/api/market/".length())); return; }
@@ -1291,6 +1292,27 @@ public class MarketLedger {
     System.out.println("Market data diag: "+sym+" phase="+phase+" feed="+feed+" quoteHTTP="+qr.statusCode()+" barHTTP="+br.statusCode()+" quoteTs="+(quoteTs.isBlank()?"NONE":quoteTs)+" quoteAgeMin="+quoteAgeMin+" barTs="+(barTs.isBlank()?"NONE":barTs)+" barAgeMin="+barAgeMin+" available="+available+" result="+diagResult);
     json(x,200,"{\"provider\":"+q(routedProvider)+",\"available\":"+available+",\"fresh\":"+fresh+",\"quoteFresh\":"+quoteFresh+",\"barFresh\":"+barFresh+",\"freshLimitMin\":"+freshLimit+",\"quoteAgeMin\":"+quoteAgeMin+",\"barAgeMin\":"+barAgeMin+",\"feed\":"+q(routedFeed)+",\"phase\":"+q(phase)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+",\"quoteTs\":"+q(quoteTs)+",\"barTs\":"+q(barTs)+"}");
   }
+  static String alpacaBarsAsYahoo(String sym,String body,String provider,String quality)throws Exception{
+    var pat=java.util.regex.Pattern.compile("\\{\\\"c\\\":(-?[0-9.]+),\\\"h\\\":(-?[0-9.]+),\\\"l\\\":(-?[0-9.]+),\\\"n\\\":[0-9]+,\\\"o\\\":(-?[0-9.]+),\\\"t\\\":\\\"([^\\\"]+)\\\",\\\"v\\\":(-?[0-9.]+)");
+    var m=pat.matcher(body);StringBuilder ts=new StringBuilder(),op=new StringBuilder(),hi=new StringBuilder(),lo=new StringBuilder(),cl=new StringBuilder(),vo=new StringBuilder();int n=0;
+    while(m.find()){if(n++>0){ts.append(',');op.append(',');hi.append(',');lo.append(',');cl.append(',');vo.append(',');}ts.append(Instant.parse(m.group(5)).getEpochSecond());cl.append(m.group(1));hi.append(m.group(2));lo.append(m.group(3));op.append(m.group(4));vo.append(m.group(6));}
+    if(n==0)throw new Exception("No usable overnight bars for "+sym);
+    return "{\"chart\":{\"result\":[{\"meta\":{\"symbol\":"+q(sym)+",\"provider\":"+q(provider)+",\"quality\":"+q(quality)+"},\"timestamp\":["+ts+"],\"indicators\":{\"quote\":[{\"open\":["+op+"],\"high\":["+hi+"],\"low\":["+lo+"],\"close\":["+cl+"],\"volume\":["+vo+"]}]}}],\"error\":null}}";
+  }
+  static void overnightBars(HttpExchange x,String raw)throws Exception{
+    String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
+    Properties p=marketSettings();if(!p.getProperty("provider","YAHOO").equals("ALPACA")){json(x,200,"{\"available\":false,\"reason\":\"Alpaca not configured\"}");return;}
+    String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);ZonedDateTime now=ZonedDateTime.now(ZoneOffset.UTC),start=now.minusHours(12),delayedEnd=now.minusMinutes(16);
+    String u="https://data.alpaca.markets/v2/stocks/"+enc+"/bars?timeframe=5Min&start="+URLEncoder.encode(start.toInstant().toString(),StandardCharsets.UTF_8)+"&end="+URLEncoder.encode(delayedEnd.toInstant().toString(),StandardCharsets.UTF_8)+"&limit=500&adjustment=raw";
+    HttpResponse<String> hist=alpacaGet(u,"boats");String hb=hist.statusCode()==200?hist.body():"";
+    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","overnight");String lb=latest.statusCode()==200?latest.body():"";
+    String combined=hb;
+    // Free-plan BOATS history is delayed, while feed=overnight latest bar is current. Append the latest real bar; never synthesize missing bars.
+    if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\\\"bar\\\"\\s*:\\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=hb+bm.group(1);}
+    try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_OVERNIGHT","REALTIME_LATEST_PLUS_DELAYED_BOATS_HISTORY");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
+    catch(Exception e){json(x,200,"{\"available\":false,\"provider\":\"ALPACA_OVERNIGHT\",\"historicalHttp\":"+hist.statusCode()+",\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
+  }
+
   static String marketPhaseServer(){
     ZonedDateTime z=ZonedDateTime.now(ZoneId.of("America/New_York"));int m=z.getHour()*60+z.getMinute();DayOfWeek d=z.getDayOfWeek();
     if(d==DayOfWeek.SATURDAY)return "CLOSED"; if(d==DayOfWeek.SUNDAY)return m>=1200?"OVERNIGHT":"CLOSED"; if(d==DayOfWeek.FRIDAY&&m>=1200)return "CLOSED";
