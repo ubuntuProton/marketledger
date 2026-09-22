@@ -1015,6 +1015,10 @@ public class MarketLedger {
         if(r.statusCode()==200) items.addAll(parseNewsRss(r.body(),syms));
       }catch(Exception e){System.err.println("News catalyst warning: "+e.getMessage());}
     }
+    // V5M.8: scan market-wide crypto catalysts separately from company-name searches.
+    // These items are explicitly THEME context: they can support exposed equities but never
+    // masquerade as a company-specific catalyst or create a BUY/STRONG signal by themselves.
+    items.addAll(fetchCryptoThemeNews(syms));
     LinkedHashMap<String,NewsItem> uniq=new LinkedHashMap<>();
     items.stream().sorted(Comparator.comparingInt((NewsItem n)->n.catalystScore()).reversed().thenComparing(Comparator.comparingInt((NewsItem n)->n.sourceScore()+n.relevanceScore()).reversed())).forEach(n->uniq.putIfAbsent(newsDedupeKey(n.title()),n));
     items=clusterNewsEvents(new ArrayList<>(uniq.values()));
@@ -1022,7 +1026,7 @@ public class MarketLedger {
     if(items.size()>24)items=items.subList(0,24);
     Map<String,Integer> themes=new LinkedHashMap<>(); for(NewsItem n:items)themes.merge(n.theme(),1,Integer::sum);
     Map<String,String> states=new LinkedHashMap<>(); for(String sym:syms)states.put(sym,"NO_FRESH_CATALYST");
-    for(NewsItem n:items) for(String sym:n.symbols()){String cur=states.getOrDefault(sym,"NO_FRESH_CATALYST");String nx=n.catalystClass();if(newsStateRank(nx)>newsStateRank(cur))states.put(sym,nx);}
+    for(NewsItem n:items) if(!n.directness().equals("THEME")) for(String sym:n.symbols()){String cur=states.getOrDefault(sym,"NO_FRESH_CATALYST");String nx=n.catalystClass();if(newsStateRank(nx)>newsStateRank(cur))states.put(sym,nx);}
     long actionable=states.values().stream().filter(v->v.equals("ACTIONABLE_CATALYST")).count(), supporting=states.values().stream().filter(v->v.equals("SUPPORTING_CONTEXT")).count(), background=states.values().stream().filter(v->v.equals("BACKGROUND")).count(), none=states.values().stream().filter(v->v.equals("NO_FRESH_CATALYST")).count();
     StringBuilder b=new StringBuilder("{\"updated\":").append(q(Instant.now().toString())).append(",\"mode\":\"FULL_UNIVERSE_PUBLIC_WEB\",\"notice\":\"Public headline intelligence; Reuters/LSEG professional feeds require separate entitlement. News is context, not a trading instruction.\",\"coverage\":{\"scanned\":").append(syms.size()).append(",\"actionable\":").append(actionable).append(",\"supporting\":").append(supporting).append(",\"background\":").append(background).append(",\"noFreshCatalyst\":").append(none).append("},\"states\":[");
     int si=0;for(var e:states.entrySet()){if(si++>0)b.append(',');b.append("{\"symbol\":").append(q(e.getKey())).append(",\"state\":").append(q(e.getValue())).append('}');}
@@ -1031,6 +1035,44 @@ public class MarketLedger {
     b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"relevanceScore\":").append(n.relevanceScore()).append(",\"catalystScore\":").append(n.catalystScore()).append(",\"catalystClass\":").append(q(n.catalystClass())).append(",\"catalystReason\":").append(q(n.catalystReason())).append(",\"novelty\":").append(q(n.novelty())).append(",\"provenance\":").append(q(n.provenance())).append(",\"evidence\":").append(q(n.evidence())).append(",\"materiality\":").append(q(n.materiality())).append(",\"directness\":").append(q(n.directness())).append(",\"sourceCount\":").append(n.sourceCount()).append(",\"sources\":[");for(int k=0;k<n.sources().size();k++){if(k>0)b.append(',');b.append(q(n.sources().get(k)));}b.append("],\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
     NEWS_CACHE_KEY=key;NEWS_CACHE_AT=now;NEWS_CACHE_JSON=b.toString();json(x,200,NEWS_CACHE_JSON);
   }
+  static List<NewsItem> fetchCryptoThemeNews(Set<String> requested){
+    List<NewsItem> out=new ArrayList<>();
+    if(requested.stream().noneMatch(s->Set.of("COIN","MSTR","CRCL").contains(s)))return out;
+    try{
+      String expr="(Bitcoin OR cryptocurrency OR stablecoin OR USDC OR crypto ETF OR digital assets) when:1d";
+      String url="https://news.google.com/rss/search?q="+URLEncoder.encode(expr,StandardCharsets.UTF_8)+"&hl=en-US&gl=US&ceid=US:en";
+      HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(7)).build();
+      HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(12)).header("User-Agent","Mozilla/5.0 MarketLedger/5M8").GET().build(),HttpResponse.BodyHandlers.ofString());
+      if(r.statusCode()!=200)return out;
+      var im=java.util.regex.Pattern.compile("(?is)<item>(.*?)</item>").matcher(r.body());
+      while(im.find()&&out.size()<18){
+        String z=im.group(1),title=xmlDecode(xmlTag(z,"title").replaceAll("(?is)<[^>]+>"," ")).replaceAll("\\s+"," ").trim();
+        if(title.isBlank())continue;
+        String low=title.toLowerCase(Locale.ROOT),link=xmlTag(z,"link"),pub=xmlTag(z,"pubDate"),source=xmlDecode(xmlTag(z,"source"));
+        if(!(low.matches(".*(bitcoin|crypto|cryptocurrency|stablecoin|usdc|digital asset|spot etf|crypto etf).*")))continue;
+        // Reject generic price-prediction/listicle content. Theme propagation is event/context only.
+        if(low.matches(".*(price prediction|forecast|should you buy|best crypto|top .* crypto|could reach|will .* hit|technical analysis).*"))continue;
+        LinkedHashSet<String> hits=new LinkedHashSet<>();
+        boolean stable=low.matches(".*(stablecoin|usdc|circle).*"), exchange=low.matches(".*(coinbase|crypto exchange|exchange regulation|tokenized market).*"), btc=low.matches(".*(bitcoin|btc|spot etf|crypto etf).*"), reg=low.matches(".*(sec |regulat|legislation|lawmakers|treasury|fed |approval|ban|rules).*" );
+        if(requested.contains("CRCL")&&(stable||reg))hits.add("CRCL");
+        if(requested.contains("COIN")&&(exchange||btc||stable||reg))hits.add("COIN");
+        if(requested.contains("MSTR")&&btc)hits.add("MSTR");
+        if(hits.isEmpty())continue;
+        int src=sourceScore(source), relevance=80;
+        String novelty=newsNovelty(low); if(novelty.equals("REJECTED"))continue;
+        String evidence=newsEvidence(low,source), materiality=(reg||stable||low.matches(".*(etf flow|inflow|outflow|approval|legislation).*"))?"MEDIUM":"LOW";
+        int score=catalystScore(low,src,relevance,pub,novelty,evidence,materiality,"INDIRECT");
+        // Theme context is deliberately capped. It can inform evidence fusion but cannot become an actionable corporate catalyst.
+        score=Math.min(68,Math.max(38,score));
+        String cls=score>=52&&materiality.equals("MEDIUM")?"SUPPORTING_CONTEXT":"BACKGROUND";
+        String reason="crypto-theme context • "+evidence.toLowerCase(Locale.ROOT)+" evidence • "+materiality.toLowerCase(Locale.ROOT)+" materiality • propagated exposure, not company-specific news";
+        String srcName=source.isBlank()?"Public news":source;
+        out.add(new NewsItem(title,link,srcName,pub,new ArrayList<>(hits),"Crypto / Digital Assets",src,relevance,score,cls,reason,novelty,"THEME CONTEXT",evidence,materiality,"THEME",1,List.of(srcName)));
+      }
+    }catch(Exception e){System.err.println("Crypto theme news warning: "+e.getMessage());}
+    return out;
+  }
+
   static List<NewsItem> parseNewsRss(String xml,Set<String> syms){
     List<NewsItem> out=new ArrayList<>(); var ip=java.util.regex.Pattern.compile("(?is)<item>(.*?)</item>"); var im=ip.matcher(xml);
     while(im.find()){String z=im.group(1),title=xmlTag(z,"title"),link=xmlTag(z,"link"),pub=xmlTag(z,"pubDate"),source=xmlTag(z,"source"); if(title.isBlank())continue;
@@ -1050,6 +1092,13 @@ public class MarketLedger {
   }
   static int newsSymbolRelevance(String symbol,String upper){
     String alias=newsAlias(symbol);
+    // V5M.8.1 entity-resolution guards: company aliases must not match unrelated places/events/common words.
+    // ETN/Eaton is collision-prone (Eaton County, Eaton Fire, people/places named Eaton). Require issuer or ticker context.
+    if(symbol.equals("ETN")){
+      boolean issuer=containsPhrase(upper,"EATON CORPORATION")||containsPhrase(upper,"EATON CORP")||containsPhrase(upper,"EATON CORP.");
+      boolean etnCtx=java.util.regex.Pattern.compile("(?:NYSE\\s*[:(]?\\s*ETN|\\(ETN\\)|ETN\\s+(?:STOCK|SHARES|EARNINGS|REVENUE|GUIDANCE))").matcher(upper).find();
+      return issuer?100:(etnCtx?92:0);
+    }
     // COHR is especially collision-prone: ordinary adjective "coherent" is not Coherent Corp.
     if(symbol.equals("COHR")){
       if(containsPhrase(upper,"COHERENT CORP")||containsPhrase(upper,"COHERENT CORP.")||containsPhrase(upper,"COHERENT CORPORATION"))return 100;

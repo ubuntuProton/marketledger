@@ -1,0 +1,6 @@
+MarketLedger Pro V5M.8.1 — Catalyst Theme + Entity Resolution Guard
+
+- Keeps V5M.8 crypto theme propagation and V5P.2.4 PRE/session behavior.
+- Adds an ETN/Eaton entity-resolution guard: generic Eaton references such as Eaton County or Eaton Fire are rejected unless the headline identifies Eaton Corporation/Corp or uses ETN in market context.
+- Theme-propagated context remains explicitly indirect and cannot create BUY/STRONG by itself.
+- No technical thresholds, Evidence Fusion thresholds, watchlist, chase, spread, liquidity, or PRE rules changed.
