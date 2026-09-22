@@ -913,6 +913,7 @@ public class MarketLedger {
       if(p.equals("/api/settings/marketdata") && m.equals("POST")) { marketSettingsSave(x); return; }
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
       if(p.startsWith("/api/overnight-bars/") && m.equals("GET")) { overnightBars(x,p.substring("/api/overnight-bars/".length())); return; }
+      if(p.startsWith("/api/session-bars/") && m.equals("GET")) { sessionBars(x,p.substring("/api/session-bars/".length())); return; }
       if(p.matches("/api/notes/\\d+") && m.equals("DELETE")) { deleteNote(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.equals("/api/quotes/refresh") && m.equals("POST")) { refreshQuotes(x); return; }
       if(p.startsWith("/api/market/") && m.equals("GET")) { marketData(x,p.substring("/api/market/".length())); return; }
@@ -1293,12 +1294,19 @@ public class MarketLedger {
     json(x,200,"{\"provider\":"+q(routedProvider)+",\"available\":"+available+",\"fresh\":"+fresh+",\"quoteFresh\":"+quoteFresh+",\"barFresh\":"+barFresh+",\"freshLimitMin\":"+freshLimit+",\"quoteAgeMin\":"+quoteAgeMin+",\"barAgeMin\":"+barAgeMin+",\"feed\":"+q(routedFeed)+",\"phase\":"+q(phase)+",\"bid\":"+bid+",\"ask\":"+ask+",\"bidSize\":"+bs+",\"askSize\":"+as+",\"last\":"+last+",\"minuteVolume\":"+barVol+",\"quoteTs\":"+q(quoteTs)+",\"barTs\":"+q(barTs)+"}");
   }
   static String alpacaBarsAsYahoo(String sym,String body,String provider,String quality)throws Exception{
-    var pat=java.util.regex.Pattern.compile("\\{\\\"c\\\":(-?[0-9.]+),\\\"h\\\":(-?[0-9.]+),\\\"l\\\":(-?[0-9.]+),\\\"n\\\":[0-9]+,\\\"o\\\":(-?[0-9.]+),\\\"t\\\":\\\"([^\\\"]+)\\\",\\\"v\\\":(-?[0-9.]+)");
-    var m=pat.matcher(body);StringBuilder ts=new StringBuilder(),op=new StringBuilder(),hi=new StringBuilder(),lo=new StringBuilder(),cl=new StringBuilder(),vo=new StringBuilder();int n=0;
-    while(m.find()){if(n++>0){ts.append(',');op.append(',');hi.append(',');lo.append(',');cl.append(',');vo.append(',');}ts.append(Instant.parse(m.group(5)).getEpochSecond());cl.append(m.group(1));hi.append(m.group(2));lo.append(m.group(3));op.append(m.group(4));vo.append(m.group(6));}
-    if(n==0)throw new Exception("No usable overnight bars for "+sym);
-    return "{\"chart\":{\"result\":[{\"meta\":{\"symbol\":"+q(sym)+",\"provider\":"+q(provider)+",\"quality\":"+q(quality)+"},\"timestamp\":["+ts+"],\"indicators\":{\"quote\":[{\"open\":["+op+"],\"high\":["+hi+"],\"low\":["+lo+"],\"close\":["+cl+"],\"volume\":["+vo+"]}]}}],\"error\":null}}";
+    // Parse each flat Alpaca bar object by key instead of depending on JSON field order.
+    // This keeps V5P.2 tolerant of provider-side serialization order changes.
+    var objPat=java.util.regex.Pattern.compile("\\{[^{}]{20,900}\\}");
+    var om=objPat.matcher(body);StringBuilder ts=new StringBuilder(),op=new StringBuilder(),hi=new StringBuilder(),lo=new StringBuilder(),cl=new StringBuilder(),vo=new StringBuilder();int n=0;
+    while(om.find()){
+      String o=om.group();String c=jsonNum(o,"c"),h=jsonNum(o,"h"),l=jsonNum(o,"l"),open=jsonNum(o,"o"),v=jsonNum(o,"v"),t=jsonStr(o,"t");
+      if(c.equals("null")||h.equals("null")||l.equals("null")||open.equals("null")||t.isBlank())continue;
+      try{long epoch=Instant.parse(t).getEpochSecond();if(n++>0){ts.append(',');op.append(',');hi.append(',');lo.append(',');cl.append(',');vo.append(',');}ts.append(epoch);cl.append(c);hi.append(h);lo.append(l);op.append(open);vo.append(v.equals("null")?"0":v);}catch(Exception ignored){}
+    }
+    if(n==0)throw new Exception("No usable Alpaca bars for "+sym);
+    return "{\"chart\":{\"result\":[{\"meta\":{\"symbol\":"+q(sym)+",\"provider\":"+q(provider)+",\"quality\":"+q(quality)+",\"barCount\":"+n+"},\"timestamp\":["+ts+"],\"indicators\":{\"quote\":[{\"open\":["+op+"],\"high\":["+hi+"],\"low\":["+lo+"],\"close\":["+cl+"],\"volume\":["+vo+"]}]}}],\"error\":null}}";
   }
+
   static void overnightBars(HttpExchange x,String raw)throws Exception{
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
     Properties p=marketSettings();if(!p.getProperty("provider","YAHOO").equals("ALPACA")){json(x,200,"{\"available\":false,\"reason\":\"Alpaca not configured\"}");return;}
@@ -1311,6 +1319,20 @@ public class MarketLedger {
     if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\\\"bar\\\"\\s*:\\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=hb+bm.group(1);}
     try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_OVERNIGHT","REALTIME_LATEST_PLUS_DELAYED_BOATS_HISTORY");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
     catch(Exception e){json(x,200,"{\"available\":false,\"provider\":\"ALPACA_OVERNIGHT\",\"historicalHttp\":"+hist.statusCode()+",\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
+  }
+
+
+  static void sessionBars(HttpExchange x,String raw)throws Exception{
+    String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
+    Properties p=marketSettings();if(!p.getProperty("provider","YAHOO").equals("ALPACA")){json(x,200,"{\"available\":false,\"reason\":\"Alpaca not configured\"}");return;}
+    String phase=marketPhaseServer();if(!phase.equals("PRE")&&!phase.equals("REGULAR")&&!phase.equals("POST")){json(x,200,"{\"available\":false,\"phase\":"+q(phase)+",\"reason\":\"Session bars are used for PRE/REGULAR/POST\"}");return;}
+    String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);ZonedDateTime now=ZonedDateTime.now(ZoneOffset.UTC),start=now.minusHours(18);
+    String u="https://data.alpaca.markets/v2/stocks/"+enc+"/bars?timeframe=5Min&start="+URLEncoder.encode(start.toInstant().toString(),StandardCharsets.UTF_8)+"&end="+URLEncoder.encode(now.toInstant().toString(),StandardCharsets.UTF_8)+"&limit=1000&adjustment=raw";
+    HttpResponse<String> hist=alpacaGet(u,"iex");String hb=hist.statusCode()==200?hist.body():"";
+    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","iex");String lb=latest.statusCode()==200?latest.body():"";
+    String combined=hb;if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\"bar\"\\s*:\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=hb+bm.group(1);}
+    try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_SESSION_IEX","CURRENT_SESSION_IEX_HISTORY_PLUS_LATEST");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
+    catch(Exception e){json(x,200,"{\"available\":false,\"provider\":\"ALPACA_SESSION_IEX\",\"phase\":"+q(phase)+",\"historicalHttp\":"+hist.statusCode()+",\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
   }
 
   static String marketPhaseServer(){
