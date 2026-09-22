@@ -1115,7 +1115,7 @@ public class MarketLedger {
       hits=filterSubjectOwnership(low,hits); if(hits.isEmpty())continue;
       String novelty=applyNewsFreshness(newsNovelty(low),pub), provenance=newsProvenance(low);
       if(novelty.equals("REJECTED"))continue;
-      String evidence=newsEvidence(low,source), directness=newsDirectness(low,hits);
+      String evidence=newsEvidence(low,source), directness=newsDirectness(low,hits,evidence);
       String materiality=newsMateriality(low,novelty,evidence,directness);
       String theme=newsTheme(low);int score=sourceScore(source);int catalyst=catalystScore(low,score,relevance,pub,novelty,evidence,materiality,directness);String cclass=catalystClass(catalyst,novelty,evidence,materiality);String creason=catalystReason(low,catalyst,novelty,evidence,materiality,directness);if(cclass.equals("IGNORE"))continue;String src=source.isBlank()?"Public news":source;out.add(new NewsItem(title,link,src,pub,hits,theme,score,relevance,catalyst,cclass,creason,novelty,provenance,evidence,materiality,directness,1,List.of(src)));
     }return out;
@@ -1180,8 +1180,15 @@ public class MarketLedger {
     if(low.matches(".*(files|filed|sec |10-k|10-q|8-k|registration statement).*"))return "CONFIRMED";
     return "REPORTED";
   }
-  static String newsDirectness(String low,List<String> hits){
+  // V5M.8.2.2 Subject Ownership Guard: relevance to an issuer is not the same as issuer ownership of the event.
+  // Only issuer-owned corporate events receive DIRECT treatment. Investor holdings, former spinouts,
+  // analyst actions and broad market context remain visible but cannot masquerade as corporate catalysts.
+  static String newsDirectness(String low,List<String> hits,String evidence){
+    if(evidence.equals("ANALYST"))return "ANALYST";
+    if(low.matches(".*(spun off from|spinoff from|spinout|spin-out|former .* subsidiary|formerly .* unit|ex-.* subsidiary).*"))return "FORMER_SPINOUT";
+    if(low.matches(".*(top portfolio holding|portfolio holding|shares acquired by|shares purchased by|increases? (its )?(stake|position|holdings)|decreases? (its )?(stake|position|holdings)|cuts? (its )?(stake|position|holdings)|sells? .* shares|buys? .* shares|institutional investor|institutional ownership|fund .* holding|asset manager .* stake).*"))return "INSTITUTIONAL_OWNERSHIP";
     if(low.matches(".*(backed|portfolio company|supplier to|customer of|partner of).*"))return "INDIRECT";
+    if(hits.size()>1 || low.matches(".*(stocks? .* in focus|market today|wall st|s&p 500|nasdaq|dow .* (rise|fall|gain|loss)|sector .* (rise|fall|gain|loss)).*"))return "MARKET_CONTEXT";
     return "DIRECT";
   }
   static String newsMateriality(String low,String novelty,String evidence,String directness){
@@ -1190,7 +1197,7 @@ public class MarketLedger {
     // Administrative settlement/claims updates are real news but usually low economic materiality for mega-cap issuers.
     if(low.matches(".*(claims now|submit claims|file a claim|claim your|payout for .* customers|eligible users|settlement claims).*"))return "LOW";
     if(low.contains("settlement")&&low.matches(".*(claim|eligible|payout|customers|owners|users).*"))return "LOW";
-    if(directness.equals("INDIRECT"))return "LOW";
+    if(Set.of("INDIRECT","INSTITUTIONAL_OWNERSHIP","FORMER_SPINOUT","MARKET_CONTEXT").contains(directness))return "LOW";
     if(evidence.equals("SPECULATIVE"))return "LOW";
     if(evidence.equals("ANALYST"))return "MEDIUM";
     if(novelty.equals("COMMENTARY")||novelty.equals("BACKGROUND"))return "LOW";
@@ -1227,7 +1234,8 @@ public class MarketLedger {
     x+=switch(novelty){case "NEW_CATALYST"->18;case "FOLLOW_THROUGH"->5;case "COMMENTARY"->-24;case "BACKGROUND"->-10;default->-60;};
     x+=switch(materiality){case "HIGH"->14;case "MEDIUM"->2;default->-22;};
     x+=switch(evidence){case "CONFIRMED"->8;case "ANALYST"->0;case "SPECULATIVE"->-20;default->2;};
-    if(directness.equals("INDIRECT"))x-=18;
+    if(Set.of("INDIRECT","INSTITUTIONAL_OWNERSHIP","FORMER_SPINOUT","MARKET_CONTEXT").contains(directness))x-=24;
+    else if(directness.equals("ANALYST"))x-=8;
     if(low.matches(".*(options|open interest|contracts were traded|unusual options).*"))x-=28;
     try{long age=newsAgeMinutes(published);if(age>=0&&age<=120)x+=12;else if(age<=360)x+=7;else if(age>1440)x-=12;if(age>4320)x-=18;if(age>10080)x-=35;}catch(Exception ignored){}
     return Math.max(0,Math.min(100,x));
@@ -1251,7 +1259,7 @@ public class MarketLedger {
     else if(low.matches(".*(acquisition|merger|partnership|contract|investment|stake|order|customer|supplier).*"))kind="business / capital event";
     else if(low.matches(".*(launch|unveil|new chip|gpu|cpu|data center|datacenter|ai model|semiconductor).*"))kind="product / technology event";
     else kind="company-specific context";
-    return prefix+kind+" • "+evidence.toLowerCase(Locale.ROOT)+" evidence • "+materiality.toLowerCase(Locale.ROOT)+" materiality"+(directness.equals("INDIRECT")?" • indirect exposure":"");
+    return prefix+kind+" • "+evidence.toLowerCase(Locale.ROOT)+" evidence • "+materiality.toLowerCase(Locale.ROOT)+" materiality"+(!directness.equals("DIRECT")?" • "+directness.toLowerCase(Locale.ROOT).replace('_',' '):"");
   }
 
   static List<NewsItem> clusterNewsEvents(List<NewsItem> input){

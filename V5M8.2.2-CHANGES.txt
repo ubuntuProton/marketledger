@@ -1,0 +1,9 @@
+MarketLedger Pro V5M.8.2.2 — Subject Ownership Guard
+
+- Preserves V5M.8.2.1 Catalyst Freshness Guard and V5M.8.1 entity-resolution protections.
+- Separates issuer-owned DIRECT events from ANALYST, INSTITUTIONAL OWNERSHIP, FORMER SPINOUT, MARKET CONTEXT, INDIRECT and THEME PROPAGATED exposure.
+- Institutional portfolio/share-holding headlines can no longer receive full direct-corporate catalyst treatment.
+- Former subsidiary/spinout transactions can no longer masquerade as current parent-company corporate events.
+- Multi-company/market roundup headlines are treated as market context rather than full direct catalysts.
+- Evidence Fusion grants full catalyst weight only to DIRECT issuer-owned events; secondary ownership/context receives limited context weight.
+- Technical BUY/STRONG thresholds, V5N.1 thresholds, V5P.2.4 session rules, liquidity/chase/spread gates and watchlist persistence are unchanged.
