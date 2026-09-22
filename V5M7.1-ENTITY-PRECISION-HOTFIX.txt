@@ -1,0 +1,14 @@
+MarketLedger Pro V5M.7.1 — Entity Precision Hotfix
+
+Scope:
+- Protects AAPL from bare-word "Apple" collisions.
+- Bare Apple now requires Apple Inc./AAPL, product, executive, securities, financial, developer, or relevant legal context.
+- Examples rejected: "Golden Apple award", apple orchard/food/agriculture references without issuer context.
+- Existing COHR and ambiguous-ticker protections remain unchanged.
+- No catalyst scoring, materiality thresholds, clustering, technical BUY/STRONG thresholds, or opening-engine thresholds changed.
+
+Regression checks:
+- Golden Apple award -> AAPL relevance 0
+- Apple settlement claims -> AAPL relevance 100
+- Apple earnings/iPhone revenue -> AAPL relevance 100
+- Apple orchard festival -> AAPL relevance 0

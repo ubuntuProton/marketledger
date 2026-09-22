@@ -1020,6 +1020,12 @@ public class MarketLedger {
       boolean cohrCtx=java.util.regex.Pattern.compile("(?:NASDAQ\\s*[:(]?\\s*COHR|\\(COHR\\)|COHR\\s+(?:STOCK|SHARES|EARNINGS))").matcher(upper).find();
       return cohrCtx?92:0;
     }
+    // AAPL needs issuer context because bare "Apple" also appears in awards, food, agriculture, schools, etc.
+    if(symbol.equals("AAPL") && containsPhrase(upper,"APPLE")){
+      String l=upper.toLowerCase(Locale.ROOT);
+      boolean issuer=l.matches(".*(apple inc|aapl|iphone|ipad|macbook|\\bmac\\b|ios|siri|apple watch|vision pro|app store|tim cook|cupertino|stock|shares|earnings|revenue|guidance|analyst|price target|nasdaq|investor|settlement|antitrust|developer).*" );
+      return issuer?100:0;
+    }
     if(!alias.isBlank() && containsPhrase(upper,alias)) return 100;
     // Short/common ticker strings are never accepted by themselves. This prevents BE="be", COIN=literal coin, ARM=body part, META=generic prefix, etc.
     if(Set.of("BE","COIN","ARM","META","AI","ON","IT","ALL","NOW").contains(symbol)) return 0;
