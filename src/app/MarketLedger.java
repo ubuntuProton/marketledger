@@ -49,7 +49,7 @@ public class MarketLedger {
   record Note(long id,String title,String body,String tag,String created) {}
   record Event(long id,String when,String type,String impact,String scope,String title,String created) {}
   record Signal(long id,String symbol,long candleTs,String captured,double price,String signal,int score,String phase,double rsi,double vwap,double trend,double volRatio,double atrPct,double spreadPct,String marketText,String eventText,double r15,double r30,double r60) {}
-  record NewsItem(String title,String link,String source,String published,List<String> symbols,String theme,int sourceScore,int relevanceScore,int catalystScore,String catalystClass,String catalystReason,String novelty,String provenance,String evidence,String materiality,String directness) {}
+  record NewsItem(String title,String link,String source,String published,List<String> symbols,String theme,int sourceScore,int relevanceScore,int catalystScore,String catalystClass,String catalystReason,String novelty,String provenance,String evidence,String materiality,String directness,int sourceCount,List<String> sources) {}
   static volatile String NEWS_CACHE_JSON = "{\"items\":[],\"themes\":[],\"updated\":null}";
   static volatile long NEWS_CACHE_AT = 0L;
   static volatile String NEWS_CACHE_KEY = "";
@@ -981,7 +981,9 @@ public class MarketLedger {
     }
     LinkedHashMap<String,NewsItem> uniq=new LinkedHashMap<>();
     items.stream().sorted(Comparator.comparingInt((NewsItem n)->n.catalystScore()).reversed().thenComparing(Comparator.comparingInt((NewsItem n)->n.sourceScore()+n.relevanceScore()).reversed())).forEach(n->uniq.putIfAbsent(newsDedupeKey(n.title()),n));
-    items=new ArrayList<>(uniq.values()); if(items.size()>24)items=items.subList(0,24);
+    items=clusterNewsEvents(new ArrayList<>(uniq.values()));
+    items.sort(Comparator.comparingInt((NewsItem n)->n.catalystScore()).reversed().thenComparing(Comparator.comparingInt((NewsItem n)->n.sourceCount()).reversed()));
+    if(items.size()>24)items=items.subList(0,24);
     Map<String,Integer> themes=new LinkedHashMap<>(); for(NewsItem n:items)themes.merge(n.theme(),1,Integer::sum);
     Map<String,String> states=new LinkedHashMap<>(); for(String sym:syms)states.put(sym,"NO_FRESH_CATALYST");
     for(NewsItem n:items) for(String sym:n.symbols()){String cur=states.getOrDefault(sym,"NO_FRESH_CATALYST");String nx=n.catalystClass();if(newsStateRank(nx)>newsStateRank(cur))states.put(sym,nx);}
@@ -990,7 +992,7 @@ public class MarketLedger {
     int si=0;for(var e:states.entrySet()){if(si++>0)b.append(',');b.append("{\"symbol\":").append(q(e.getKey())).append(",\"state\":").append(q(e.getValue())).append('}');}
     b.append("],\"themes\":[");
     int ti=0;for(var e:themes.entrySet().stream().sorted((a,z)->Integer.compare(z.getValue(),a.getValue())).limit(6).toList()){if(ti++>0)b.append(',');b.append("{\"name\":").append(q(e.getKey())).append(",\"stories\":").append(e.getValue()).append('}');}
-    b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"relevanceScore\":").append(n.relevanceScore()).append(",\"catalystScore\":").append(n.catalystScore()).append(",\"catalystClass\":").append(q(n.catalystClass())).append(",\"catalystReason\":").append(q(n.catalystReason())).append(",\"novelty\":").append(q(n.novelty())).append(",\"provenance\":").append(q(n.provenance())).append(",\"evidence\":").append(q(n.evidence())).append(",\"materiality\":").append(q(n.materiality())).append(",\"directness\":").append(q(n.directness())).append(",\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
+    b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"relevanceScore\":").append(n.relevanceScore()).append(",\"catalystScore\":").append(n.catalystScore()).append(",\"catalystClass\":").append(q(n.catalystClass())).append(",\"catalystReason\":").append(q(n.catalystReason())).append(",\"novelty\":").append(q(n.novelty())).append(",\"provenance\":").append(q(n.provenance())).append(",\"evidence\":").append(q(n.evidence())).append(",\"materiality\":").append(q(n.materiality())).append(",\"directness\":").append(q(n.directness())).append(",\"sourceCount\":").append(n.sourceCount()).append(",\"sources\":[");for(int k=0;k<n.sources().size();k++){if(k>0)b.append(',');b.append(q(n.sources().get(k)));}b.append("],\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
     NEWS_CACHE_KEY=key;NEWS_CACHE_AT=now;NEWS_CACHE_JSON=b.toString();json(x,200,NEWS_CACHE_JSON);
   }
   static List<NewsItem> parseNewsRss(String xml,Set<String> syms){
@@ -1006,7 +1008,7 @@ public class MarketLedger {
       if(novelty.equals("REJECTED"))continue;
       String evidence=newsEvidence(low,source), directness=newsDirectness(low,hits);
       String materiality=newsMateriality(low,novelty,evidence,directness);
-      String theme=newsTheme(low);int score=sourceScore(source);int catalyst=catalystScore(low,score,relevance,pub,novelty,evidence,materiality,directness);String cclass=catalystClass(catalyst,novelty,evidence,materiality);String creason=catalystReason(low,catalyst,novelty,evidence,materiality,directness);if(cclass.equals("IGNORE"))continue;out.add(new NewsItem(title,link,source.isBlank()?"Public news":source,pub,hits,theme,score,relevance,catalyst,cclass,creason,novelty,provenance,evidence,materiality,directness));
+      String theme=newsTheme(low);int score=sourceScore(source);int catalyst=catalystScore(low,score,relevance,pub,novelty,evidence,materiality,directness);String cclass=catalystClass(catalyst,novelty,evidence,materiality);String creason=catalystReason(low,catalyst,novelty,evidence,materiality,directness);if(cclass.equals("IGNORE"))continue;String src=source.isBlank()?"Public news":source;out.add(new NewsItem(title,link,src,pub,hits,theme,score,relevance,catalyst,cclass,creason,novelty,provenance,evidence,materiality,directness,1,List.of(src)));
     }return out;
   }
   static int newsSymbolRelevance(String symbol,String upper){
@@ -1029,7 +1031,7 @@ public class MarketLedger {
   static boolean containsPhrase(String upper,String phrase){return java.util.regex.Pattern.compile("(?:^|[^A-Z0-9])"+java.util.regex.Pattern.quote(phrase)+"(?:[^A-Z0-9]|$)").matcher(upper).find();}
 
   static String newsNovelty(String low){
-    if(low.matches(".*(best .* deals|deals you can shop|coupon|discount|review|how to|technical blog|stock forecast|price prediction|prediction:|where will .* stock|should you buy|stocks to buy|stock flashes signal|beats stock market upswing|what investors need to know|could be worth|parabolic).*"))return "REJECTED";
+    if(low.matches(".*(best .* deals|deals you can shop|coupon|discount|review|how to|technical blog|stock forecast|price prediction|prediction:|where will .* stock|should you buy|is .* a buy|stocks to buy|stock flashes signal|beats stock market upswing|what investors need to know|analyst consensus explained|could be worth|parabolic).*"))return "REJECTED";
     if(low.matches(".*(soars|surges|jumps|rallies|rally|rose|gains|climbs|falls|slides|drops|after .* rally|after .* surge|why .* stock|what drove|what happened).*"))return "COMMENTARY";
     if(low.matches(".*(today|announces|announced|reports|reported|files|filed|wins|won|signs|signed|launches|launched|unveils|unveiled|raises guidance|cuts guidance|approves|approved|acquires|acquired|merger|partnership|contract|order|settlement|lawsuit|investigation|upgrade|downgrade|price target).*"))return "NEW_CATALYST";
     if(low.matches(".*(earnings|guidance|revenue goal|revenue target|customer|supplier|capacity|shipment|production).*"))return "FOLLOW_THROUGH";
@@ -1055,7 +1057,8 @@ public class MarketLedger {
     // Market-flow observations are useful elsewhere, but are not corporate catalysts.
     if(low.matches(".*(options|contracts were traded|open interest|unusual options|call volume|put volume).*"))return "LOW";
     // Administrative settlement/claims updates are real news but usually low economic materiality for mega-cap issuers.
-    if(low.matches(".*(claims now|submit claims|payout for .* customers|eligible users|settlement claims).*"))return "LOW";
+    if(low.matches(".*(claims now|submit claims|file a claim|claim your|payout for .* customers|eligible users|settlement claims).*"))return "LOW";
+    if(low.contains("settlement")&&low.matches(".*(claim|eligible|payout|customers|owners|users).*"))return "LOW";
     if(directness.equals("INDIRECT"))return "LOW";
     if(evidence.equals("SPECULATIVE"))return "LOW";
     if(evidence.equals("ANALYST"))return "MEDIUM";
@@ -1099,6 +1102,38 @@ public class MarketLedger {
     else if(low.matches(".*(launch|unveil|new chip|gpu|cpu|data center|datacenter|ai model|semiconductor).*"))kind="product / technology event";
     else kind="company-specific context";
     return prefix+kind+" • "+evidence.toLowerCase(Locale.ROOT)+" evidence • "+materiality.toLowerCase(Locale.ROOT)+" materiality"+(directness.equals("INDIRECT")?" • indirect exposure":"");
+  }
+
+  static List<NewsItem> clusterNewsEvents(List<NewsItem> input){
+    LinkedHashMap<String,List<NewsItem>> groups=new LinkedHashMap<>();
+    for(NewsItem n:input)groups.computeIfAbsent(newsEventKey(n),k->new ArrayList<>()).add(n);
+    List<NewsItem> out=new ArrayList<>();
+    for(List<NewsItem> g:groups.values()){
+      g.sort(Comparator.comparingInt((NewsItem n)->n.sourceScore()).reversed().thenComparingInt(NewsItem::catalystScore).reversed());
+      NewsItem rep=g.get(0);LinkedHashSet<String> srcs=new LinkedHashSet<>();for(NewsItem n:g)srcs.add(n.source());
+      int independent=srcs.size(), bestSource=g.stream().mapToInt(NewsItem::sourceScore).max().orElse(rep.sourceScore());
+      int score=Math.min(100,rep.catalystScore()+(independent>=3?6:independent>=2?3:0));
+      String cls=catalystClass(score,rep.novelty(),rep.evidence(),rep.materiality());
+      String reason=rep.catalystReason()+(independent>1?" • "+independent+" independent reports":"");
+      out.add(new NewsItem(rep.title(),rep.link(),rep.source(),rep.published(),rep.symbols(),rep.theme(),bestSource,rep.relevanceScore(),score,cls,reason,rep.novelty(),rep.provenance(),rep.evidence(),rep.materiality(),rep.directness(),independent,new ArrayList<>(srcs)));
+    }
+    return out;
+  }
+  static String newsEventKey(NewsItem n){
+    String low=n.title().toLowerCase(Locale.ROOT), action="context";
+    if(low.matches(".*(settlement|claims).*"))action="settlement";
+    else if(low.matches(".*(downgrade|upgrade|price target|rating).*"))action="analyst";
+    else if(low.matches(".*(launch|launches|launched|unveil|unveils|announces).*"))action="launch";
+    else if(low.matches(".*(earnings|guidance|revenue|eps|profit).*"))action="earnings";
+    else if(low.matches(".*(lawsuit|investigation|antitrust|recall|ban).*"))action="legal";
+    else if(low.matches(".*(acquisition|merger|partnership|contract|order|investment|stake).*"))action="deal";
+    String core=low.replaceAll("\\s+-\\s+[^-]{2,40}$","").replaceAll("[^a-z0-9 ]"," ")
+      .replaceAll("\\b(the|a|an|and|or|to|of|for|on|in|with|after|says|report|reports|reported|announces|announced|launches|launched|new|now|stock|shares|corp|corporation|inc)\\b"," ").replaceAll("\\s+"," ").trim();
+    String[] ws=core.split(" ");StringBuilder sig=new StringBuilder();int kept=0;for(String w:ws){if(w.length()<4)continue;if(kept++<5)sig.append(w).append('-');}
+    List<String> sy=new ArrayList<>(n.symbols());Collections.sort(sy);
+    // Event type + affected symbols is deliberate for highly distinctive events; signature separates simultaneous unrelated events.
+    String distinctive=low.contains("photonlink")?"photonlink":low.contains("settlement")?"settlement":low.contains("rothschild redburn")?"rothschild-redburn":sig.toString();
+    return String.join("+",sy)+"|"+action+"|"+distinctive;
   }
 
   static boolean newsJunk(String low){return low.matches(".*(\\$?1,?000 invested.*worth|could be worth by|should you buy.*stock|prediction for|where will .* stock be|millionaire-maker|top .* stocks to buy|best stocks to buy|best .* deals|deals you can shop|coupon|discount).*" );}
