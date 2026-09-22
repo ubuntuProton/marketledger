@@ -1,0 +1,11 @@
+MarketLedger Pro V5M.8.2.1 — Catalyst Freshness Guard
+
+- Preserves V5M.8.2 source-focused catalyst discovery and V5M.8.1 entity-resolution guards.
+- Adds publication-age normalization before catalyst classification.
+- 0–24 hours: eligible for realtime catalyst classification.
+- 24–72 hours: NEW_CATALYST is downgraded to FOLLOW_THROUGH / recent context.
+- 3–7 days: BACKGROUND only; cannot become current supporting/actionable evidence.
+- Older than 7 days, invalid dates, or materially future-dated timestamps: rejected from realtime catalyst evidence.
+- Adds stronger age penalties as defense in depth.
+- Applies the same freshness guard to company-specific and crypto-theme news.
+- Does not change technical BUY/STRONG thresholds, V5N.1 evidence thresholds, V5P.2.4 session logic, chase/spread/liquidity gates, or watchlist persistence.

@@ -1089,7 +1089,7 @@ public class MarketLedger {
         if(requested.contains("MSTR")&&btc)hits.add("MSTR");
         if(hits.isEmpty())continue;
         int src=sourceScore(source), relevance=80;
-        String novelty=newsNovelty(low); if(novelty.equals("REJECTED"))continue;
+        String novelty=applyNewsFreshness(newsNovelty(low),pub); if(novelty.equals("REJECTED"))continue;
         String evidence=newsEvidence(low,source), materiality=(reg||stable||low.matches(".*(etf flow|inflow|outflow|approval|legislation).*"))?"MEDIUM":"LOW";
         int score=catalystScore(low,src,relevance,pub,novelty,evidence,materiality,"INDIRECT");
         // Theme context is deliberately capped. It can inform evidence fusion but cannot become an actionable corporate catalyst.
@@ -1113,7 +1113,7 @@ public class MarketLedger {
       for(String symbol:syms){int r=newsSymbolRelevance(symbol,upper);if(r>0){hits.add(symbol);relevance=Math.max(relevance,r);}}
       if(hits.isEmpty()||relevance<70)continue;
       hits=filterSubjectOwnership(low,hits); if(hits.isEmpty())continue;
-      String novelty=newsNovelty(low), provenance=newsProvenance(low);
+      String novelty=applyNewsFreshness(newsNovelty(low),pub), provenance=newsProvenance(low);
       if(novelty.equals("REJECTED"))continue;
       String evidence=newsEvidence(low,source), directness=newsDirectness(low,hits);
       String materiality=newsMateriality(low,novelty,evidence,directness);
@@ -1200,6 +1200,23 @@ public class MarketLedger {
     if(low.matches(".*(launch|unveil).*"))return low.matches(".*(data center|datacenter|ai infrastructure|platform|new chip|gpu|cpu|major|flagship).*" )?"MEDIUM":"LOW";
     return "MEDIUM";
   }
+  // V5M.8.2.1 Catalyst Freshness Guard. Publication/source authority cannot make stale news current.
+  // 0-24h: realtime candidate; 24-72h: recent/follow-through only; 3-7d: background only; >7d: excluded.
+  static long newsAgeMinutes(String published){
+    try{
+      long age=Duration.between(ZonedDateTime.parse(published,DateTimeFormatter.RFC_1123_DATE_TIME).toInstant(),Instant.now()).toMinutes();
+      // Small clock skew is harmless; materially future-dated items are invalid for realtime evidence.
+      if(age < -30)return Long.MAX_VALUE;
+      return Math.max(0,age);
+    }catch(Exception e){return Long.MAX_VALUE;}
+  }
+  static String applyNewsFreshness(String novelty,String published){
+    long age=newsAgeMinutes(published);
+    if(age==Long.MAX_VALUE||age>10080)return "REJECTED";       // >7 days: historical, never realtime evidence
+    if(age>4320)return "BACKGROUND";                           // 3-7 days: background only
+    if(age>1440&&novelty.equals("NEW_CATALYST"))return "FOLLOW_THROUGH"; // 24-72h cannot be a new catalyst
+    return novelty;
+  }
   static int catalystScore(String low,int source,int relevance,String published,String novelty,String evidence,String materiality,String directness){
     int x=(source>=95?18:source>=85?13:source>=75?9:4)+(relevance>=100?16:10);
     if(low.matches(".*(earnings|revenue|guidance|profit|eps|sales|raises guidance|cuts guidance|beats|misses).*"))x+=25;
@@ -1212,7 +1229,7 @@ public class MarketLedger {
     x+=switch(evidence){case "CONFIRMED"->8;case "ANALYST"->0;case "SPECULATIVE"->-20;default->2;};
     if(directness.equals("INDIRECT"))x-=18;
     if(low.matches(".*(options|open interest|contracts were traded|unusual options).*"))x-=28;
-    try{long age=Duration.between(ZonedDateTime.parse(published,DateTimeFormatter.RFC_1123_DATE_TIME).toInstant(),Instant.now()).toMinutes();if(age<=120)x+=12;else if(age<=360)x+=7;else if(age>900)x-=8;}catch(Exception ignored){}
+    try{long age=newsAgeMinutes(published);if(age>=0&&age<=120)x+=12;else if(age<=360)x+=7;else if(age>1440)x-=12;if(age>4320)x-=18;if(age>10080)x-=35;}catch(Exception ignored){}
     return Math.max(0,Math.min(100,x));
   }
   static String catalystClass(int x,String novelty,String evidence,String materiality){
