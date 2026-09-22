@@ -1,0 +1,15 @@
+MarketLedger Pro V5P.2.2 — Provider Diagnostic Instrumentation
+
+Purpose
+- Diagnose the live premarket candle gap without changing scoring thresholds.
+- Adds GET /api/feed-diagnostics/{symbol}.
+- Reports Alpaca SIP, IEX and delayed_sip HTTP status, returned 5-minute bar count, latest timestamp/age, and provider message.
+- Reports Yahoo latest candle timestamp/age from the existing includePrePost path.
+- Adds a dashboard Premarket Data Diagnostics panel (default AMD, COIN, CRCL, MSTR).
+
+No changes
+- V5N.1 technical thresholds unchanged.
+- Evidence Fusion unchanged.
+- V5M.7.1 news classification unchanged.
+- 58-stock persistent universe unchanged.
+- No synthetic candles.

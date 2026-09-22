@@ -914,6 +914,7 @@ public class MarketLedger {
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
       if(p.startsWith("/api/overnight-bars/") && m.equals("GET")) { overnightBars(x,p.substring("/api/overnight-bars/".length())); return; }
       if(p.startsWith("/api/session-bars/") && m.equals("GET")) { sessionBars(x,p.substring("/api/session-bars/".length())); return; }
+      if(p.startsWith("/api/feed-diagnostics/") && m.equals("GET")) { feedDiagnostics(x,p.substring("/api/feed-diagnostics/".length())); return; }
       if(p.matches("/api/notes/\\d+") && m.equals("DELETE")) { deleteNote(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.equals("/api/quotes/refresh") && m.equals("POST")) { refreshQuotes(x); return; }
       if(p.startsWith("/api/market/") && m.equals("GET")) { marketData(x,p.substring("/api/market/".length())); return; }
@@ -1321,6 +1322,27 @@ public class MarketLedger {
     catch(Exception e){json(x,200,"{\"available\":false,\"provider\":\"ALPACA_OVERNIGHT\",\"historicalHttp\":"+hist.statusCode()+",\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
   }
 
+
+
+  static String feedBarDiag(String feed,HttpResponse<String> r){
+    String b=r.body()==null?"":r.body();int count=0;String latest="";long age=-1;
+    var m=java.util.regex.Pattern.compile("\\{[^{}]{20,900}\\}").matcher(b);
+    while(m.find()){String t=jsonStr(m.group(),"t");if(!t.isBlank()){count++;latest=t;}}
+    try{if(!latest.isBlank())age=Math.max(0,(System.currentTimeMillis()-Instant.parse(latest).toEpochMilli())/60000);}catch(Exception ignored){}
+    String msg=jsonStr(b,"message");
+    return "{\"feed\":"+q(feed)+",\"http\":"+r.statusCode()+",\"barCount\":"+count+",\"latestTs\":"+q(latest)+",\"latestAgeMin\":"+age+",\"message\":"+q(msg)+"}";
+  }
+  static void feedDiagnostics(HttpExchange x,String raw)throws Exception{
+    String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
+    Properties p=marketSettings();if(!p.getProperty("provider","YAHOO").equals("ALPACA")){json(x,200,"{\"available\":false,\"reason\":\"Alpaca not configured\"}");return;}
+    String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);ZonedDateTime now=ZonedDateTime.now(ZoneOffset.UTC),start=now.minusHours(18);
+    String u="https://data.alpaca.markets/v2/stocks/"+enc+"/bars?timeframe=5Min&start="+URLEncoder.encode(start.toInstant().toString(),StandardCharsets.UTF_8)+"&end="+URLEncoder.encode(now.toInstant().toString(),StandardCharsets.UTF_8)+"&limit=1000&adjustment=raw";
+    String[] feeds={"sip","iex","delayed_sip"};StringBuilder fs=new StringBuilder();
+    for(int i=0;i<feeds.length;i++){HttpResponse<String> r=alpacaGet(u,feeds[i]);if(i>0)fs.append(',');fs.append(feedBarDiag(feeds[i],r));}
+    long yahooAge=-1;String yahooTs="";int yahooCount=0;String yahooErr="";
+    try{List<PricePoint> yp=historicalPoints(sym);yahooCount=yp.size();if(!yp.isEmpty()){PricePoint y=yp.get(yp.size()-1);yahooAge=Math.max(0,(System.currentTimeMillis()-y.ts())/60000);yahooTs=Instant.ofEpochMilli(y.ts()).toString();}}catch(Exception e){yahooErr=String.valueOf(e.getMessage());}
+    json(x,200,"{\"symbol\":"+q(sym)+",\"phase\":"+q(marketPhaseServer())+",\"serverTime\":"+q(Instant.now().toString())+",\"alpaca\":["+fs+"],\"yahoo\":{\"barCount\":"+yahooCount+",\"latestTs\":"+q(yahooTs)+",\"latestAgeMin\":"+yahooAge+",\"error\":"+q(yahooErr)+"}}");
+  }
 
   static void sessionBars(HttpExchange x,String raw)throws Exception{
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
