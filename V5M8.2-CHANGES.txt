@@ -1,0 +1,18 @@
+MarketLedger Pro — V5M.8.2 Catalyst Discovery Coverage
+
+Changes
+- Adds a second-pass source-focused public-news discovery scan for Reuters, CNBC, TheStreet, Yahoo Finance, Barron’s, Benzinga and MarketWatch.
+- Uses Google News as the public index; does not scrape proprietary/paywalled publisher pages.
+- All source-focused results still pass V5M.8.1 entity-resolution and subject-ownership guards.
+- Keeps crypto THEME propagation separate from DIRECT company catalysts.
+- Expands source-quality differentiation without allowing source/news evidence to bypass tape, liquidity, chase, event or time gates.
+- Existing event clustering and syndication deduplication remain active across generic, source-focused and theme scans.
+- No technical thresholds, Evidence Fusion thresholds, PRE/overnight rules, watchlist membership, BUY/STRONG thresholds, chase/spread/liquidity gates were changed.
+
+Validation after deploy
+1. Header must say V5M.8.2 Catalyst Discovery Coverage.
+2. Refresh news, then analysis.
+3. Check CNBC/TheStreet/Reuters/etc. stories can appear when indexed and entity-relevant.
+4. ETN must still reject Eaton County/Eaton Fire lexical collisions.
+5. DIRECT and THEME PROPAGATED must remain distinct.
+6. News/theme evidence alone must not create BUY/STRONG.

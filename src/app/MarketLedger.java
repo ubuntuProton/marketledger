@@ -1015,6 +1015,13 @@ public class MarketLedger {
         if(r.statusCode()==200) items.addAll(parseNewsRss(r.body(),syms));
       }catch(Exception e){System.err.println("News catalyst warning: "+e.getMessage());}
     }
+    // V5M.8.2: second-pass source-focused discovery. Google News remains the public index;
+    // this pass explicitly asks for high-value financial publishers (including CNBC and TheStreet)
+    // so a catalyst is less likely to be missed merely because the generic company query ranked it low.
+    // We do not scrape paywalled/proprietary pages and all returned headlines still pass the same
+    // entity-resolution, ownership, novelty, materiality and deduplication guards below.
+    items.addAll(fetchSourceFocusedNews(syms));
+
     // V5M.8: scan market-wide crypto catalysts separately from company-name searches.
     // These items are explicitly THEME context: they can support exposed equities but never
     // masquerade as a company-specific catalyst or create a BUY/STRONG signal by themselves.
@@ -1035,6 +1042,29 @@ public class MarketLedger {
     b.append("],\"items\":[");for(int i=0;i<items.size();i++){if(i>0)b.append(',');NewsItem n=items.get(i);b.append("{\"title\":").append(q(n.title())).append(",\"link\":").append(q(n.link())).append(",\"source\":").append(q(n.source())).append(",\"published\":").append(q(n.published())).append(",\"theme\":").append(q(n.theme())).append(",\"sourceScore\":").append(n.sourceScore()).append(",\"relevanceScore\":").append(n.relevanceScore()).append(",\"catalystScore\":").append(n.catalystScore()).append(",\"catalystClass\":").append(q(n.catalystClass())).append(",\"catalystReason\":").append(q(n.catalystReason())).append(",\"novelty\":").append(q(n.novelty())).append(",\"provenance\":").append(q(n.provenance())).append(",\"evidence\":").append(q(n.evidence())).append(",\"materiality\":").append(q(n.materiality())).append(",\"directness\":").append(q(n.directness())).append(",\"sourceCount\":").append(n.sourceCount()).append(",\"sources\":[");for(int k=0;k<n.sources().size();k++){if(k>0)b.append(',');b.append(q(n.sources().get(k)));}b.append("],\"symbols\":[");for(int j=0;j<n.symbols().size();j++){if(j>0)b.append(',');b.append(q(n.symbols().get(j)));}b.append("]}");}b.append("]}");
     NEWS_CACHE_KEY=key;NEWS_CACHE_AT=now;NEWS_CACHE_JSON=b.toString();json(x,200,NEWS_CACHE_JSON);
   }
+  static List<NewsItem> fetchSourceFocusedNews(Set<String> syms){
+    List<NewsItem> out=new ArrayList<>();
+    try{
+      List<String> list=new ArrayList<>(syms);
+      HttpClient c=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(7)).build();
+      // Keep the source list intentionally editorial rather than using it as a bullish-quality signal.
+      // Source score affects evidence quality only; it cannot bypass materiality/tape/risk gates.
+      String publishers="(source:Reuters OR source:CNBC OR source:TheStreet OR source:\"Yahoo Finance\" OR source:Barrons OR source:Benzinga OR source:MarketWatch)";
+      for(int start=0;start<list.size();start+=8){
+        List<String> batch=list.subList(start,Math.min(start+8,list.size()));
+        List<String> terms=new ArrayList<>();
+        for(String symbol:batch){String alias=newsAlias(symbol);terms.add("\""+(alias.isBlank()?symbol:alias)+"\"");}
+        String expr="("+String.join(" OR ",terms)+") "+publishers+" when:1d";
+        String url="https://news.google.com/rss/search?q="+URLEncoder.encode(expr,StandardCharsets.UTF_8)+"&hl=en-US&gl=US&ceid=US:en";
+        try{
+          HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(12)).header("User-Agent","Mozilla/5.0 MarketLedger/5M8.2").GET().build(),HttpResponse.BodyHandlers.ofString());
+          if(r.statusCode()==200)out.addAll(parseNewsRss(r.body(),syms));
+        }catch(Exception e){System.err.println("Source-focused news warning: "+e.getMessage());}
+      }
+    }catch(Exception e){System.err.println("Source-focused discovery warning: "+e.getMessage());}
+    return out;
+  }
+
   static List<NewsItem> fetchCryptoThemeNews(Set<String> requested){
     List<NewsItem> out=new ArrayList<>();
     if(requested.stream().noneMatch(s->Set.of("COIN","MSTR","CRCL").contains(s)))return out;
@@ -1244,7 +1274,7 @@ public class MarketLedger {
   static String xmlTag(String s,String tag){var m=java.util.regex.Pattern.compile("(?is)<"+tag+"(?:\\s[^>]*)?>(.*?)</"+tag+">").matcher(s);return m.find()?m.group(1).trim():"";}
   static String xmlDecode(String s){return s.replace("<![CDATA[","").replace("]]>","").replace("&amp;","&").replace("&quot;","\\\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">");}
   static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";case "ALAB"->"ASTERA LABS";case "CRDO"->"CREDO TECHNOLOGY";case "CRWV"->"COREWEAVE";case "NBIS"->"NEBIUS";case "TEM"->"TEMPUS AI";case "CLS"->"CELESTICA";case "ETN"->"EATON";case "GEV"->"GE VERNOVA";case "LEU"->"CENTRUS ENERGY";case "PSTG"->"PURE STORAGE";case "CRCL"->"CIRCLE INTERNET";default->"";};}
-  static int sourceScore(String source){String s=source.toLowerCase(Locale.ROOT);if(s.contains("reuters"))return 100;if(s.contains("schwab"))return 95;if(s.contains("sec")||s.contains("business wire")||s.contains("globe newswire"))return 90;if(s.contains("cnbc")||s.contains("bloomberg")||s.contains("associated press"))return 85;return 60;}
+  static int sourceScore(String source){String s=source.toLowerCase(Locale.ROOT);if(s.contains("reuters"))return 100;if(s.contains("schwab"))return 95;if(s.contains("sec")||s.contains("business wire")||s.contains("globe newswire"))return 90;if(s.contains("cnbc")||s.contains("bloomberg")||s.contains("associated press"))return 85;if(s.contains("barron"))return 82;if(s.contains("yahoo finance")||s.contains("marketwatch"))return 78;if(s.contains("thestreet")||s.contains("the street")||s.contains("benzinga"))return 74;return 60;}
   static String newsTheme(String s){if(s.matches(".*(investigation|lawsuit|settlement|recall|ban|approval|antitrust|export control).*"))return "Legal / Regulatory";if(s.matches(".*(earnings|revenue|guidance|profit|eps|sales).*"))return "Earnings / Guidance";if(s.matches(".*(acquisition|merger|partnership|contract|buyout|stake|investment).*"))return "Deals / Partnerships";if(s.matches(".*(ai|artificial intelligence|data center|datacenter|gpu|cpu|semiconductor|chip).*"))return "AI / Compute / Semiconductors";if(s.matches(".*(fed|rate|yield|inflation|cpi|jobs|payroll|treasury).*"))return "Rates / Macro";if(s.matches(".*(bitcoin|crypto|ethereum).*"))return "Crypto";return "Company / Market News";}
 
   static void syncSchwab(HttpExchange x)throws Exception{
