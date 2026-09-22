@@ -1,0 +1,21 @@
+MarketLedger Pro V5P.2.3 — Yahoo PRE Candle Pipeline Fix
+
+Root cause confirmed by V5P.2.2 diagnostics:
+- Yahoo returned current premarket data (latest age 0m).
+- /api/market nevertheless fell through to stale Alpaca IEX candles.
+- The Yahoo acceptance test searched for escaped JSON text (\\\"timestamp\\\") rather than the actual JSON token (\"timestamp\").
+- Therefore valid Yahoo responses were rejected and the stale fallback was used.
+
+V5P.2.3 changes:
+1. Corrects the Yahoo response validation in marketData().
+2. Valid Yahoo includePrePost responses now return directly to the browser instead of falling through to Alpaca IEX.
+3. Keeps all existing PRE/overnight/session safety gates and scoring thresholds unchanged.
+4. Keeps V5P.2.2 provider diagnostics available for verification.
+
+Validation target during PRE:
+- Run diagnostics: Yahoo should remain current.
+- Refresh analysis.
+- Setup Board candle age should fall from ~950m to current 0–5m where Yahoo has valid OHLC candles.
+- After at least 3 current PRE 5m candles exist, the stale/insufficient-current-PM gate should clear naturally.
+
+No BUY/STRONG thresholds, Evidence Fusion scores, news scoring, or watchlist universe were changed.
