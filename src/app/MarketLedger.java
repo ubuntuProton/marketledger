@@ -44,6 +44,21 @@ public class MarketLedger {
   static final Object LOCK = new Object();
   static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
+  // V5O.2 approved monitoring universe. This is merged into the persistent watchlist
+  // on startup so cloud redeploys cannot leave the technical board at the old 31-name set.
+  static final List<String[]> V5O_MONITORING_UNIVERSE = List.of(
+    new String[]{"META","Meta Platforms"}, new String[]{"MSFT","Microsoft"}, new String[]{"AMZN","Amazon"},
+    new String[]{"GOOGL","Alphabet"}, new String[]{"ORCL","Oracle"}, new String[]{"PLTR","Palantir"},
+    new String[]{"QCOM","Qualcomm"}, new String[]{"ASML","ASML Holding"}, new String[]{"LRCX","Lam Research"},
+    new String[]{"KLAC","KLA"}, new String[]{"AMAT","Applied Materials"}, new String[]{"ANET","Arista Networks"},
+    new String[]{"DELL","Dell Technologies"}, new String[]{"VRT","Vertiv"}, new String[]{"CEG","Constellation Energy"},
+    new String[]{"NVT","nVent Electric"}, new String[]{"GNRC","Generac"}, new String[]{"CIEN","Ciena"},
+    new String[]{"LITE","Lumentum"}, new String[]{"CSCO","Cisco"}, new String[]{"CRWD","CrowdStrike"},
+    new String[]{"PANW","Palo Alto Networks"}, new String[]{"ZS","Zscaler"}, new String[]{"FTNT","Fortinet"},
+    new String[]{"NET","Cloudflare"}, new String[]{"OKTA","Okta"}, new String[]{"MRVL","Marvell"},
+    new String[]{"HPE","Hewlett Packard Enterprise"}, new String[]{"SMCI","Super Micro Computer"}
+  );
+
   record Stock(String symbol,String name,double price,double prev,String updated) {}
   record Call(long id,String symbol,String direction,double baseline,double threshold,String due,String note,String status,double resolved,double move,String created,String resolvedAt) {}
   record Note(long id,String title,String body,String tag,String created) {}
@@ -55,7 +70,10 @@ public class MarketLedger {
   static volatile String NEWS_CACHE_KEY = "";
 
   public static void main(String[] args) throws Exception {
-    Files.createDirectories(DATA); Files.createDirectories(BACKUPS); initDatabase(); hydrateFromDatabase(); migrateLegacyData(); seed(); syncAllDataToDatabase(); backupData();
+    Files.createDirectories(DATA); Files.createDirectories(BACKUPS); initDatabase(); hydrateFromDatabase(); migrateLegacyData(); seed();
+    int universeAdded=ensureV5OMonitoringUniverse();
+    syncAllDataToDatabase(); backupData();
+    System.out.println("V5O monitoring universe: "+readStocks().size()+" persistent watchlist tickers"+(universeAdded>0?" ("+universeAdded+" added at startup)":""));
     HttpServer server=HttpServer.create(new InetSocketAddress("0.0.0.0",PORT),0);
     server.createContext("/", MarketLedger::route);
     server.setExecutor(Executors.newCachedThreadPool()); server.start();
@@ -874,6 +892,7 @@ public class MarketLedger {
       if(p.equals("/api/signals") && m.equals("POST")) { recordSignal(x); return; }
       if(p.equals("/api/signals/performance") && m.equals("GET")) { json(x,200,signalPerformance()); return; }
       if(p.equals("/api/signals/calibration") && m.equals("GET")) { json(x,200,signalCalibration(x)); return; }
+      if(p.equals("/api/stocks/v5o-universe") && m.equals("POST")) { syncV5OUniverse(x); return; }
       if(p.equals("/api/stocks") && m.equals("POST")) { addStock(x); return; }
       if(p.startsWith("/api/stocks/") && p.endsWith("/price") && m.equals("POST")) { setPrice(x,p.split("/")[3]); return; }
       if(p.startsWith("/api/stocks/") && m.equals("DELETE")) { deleteStock(x,p.substring("/api/stocks/".length())); return; }
@@ -944,6 +963,20 @@ public class MarketLedger {
     }
   }
 
+  static int ensureV5OMonitoringUniverse() throws IOException {
+    synchronized(LOCK){
+      var stocks=readStocks(); var have=new HashSet<String>();
+      for(var z:stocks)have.add(z.symbol.toUpperCase(Locale.ROOT));
+      int added=0;
+      for(var item:V5O_MONITORING_UNIVERSE){String sym=item[0];if(have.add(sym)){stocks.add(new Stock(sym,item[1],0,0,now()));added++;}}
+      if(added>0)writeStocks(stocks);
+      return added;
+    }
+  }
+  static void syncV5OUniverse(HttpExchange x)throws Exception{
+    int before=readStocks().size(), added=ensureV5OMonitoringUniverse(), after=readStocks().size();
+    json(x,200,"{\"ok\":true,\"added\":"+added+",\"before\":"+before+",\"after\":"+after+"}");
+  }
   static void addStock(HttpExchange x)throws Exception{Map<String,String> f=form(x);String sym=req(f,"symbol").toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]",""); if(sym.isBlank())throw new Exception("Invalid ticker"); double price=num(f.get("price")); synchronized(LOCK){var s=readStocks(); if(s.stream().anyMatch(a->a.symbol.equalsIgnoreCase(sym)))throw new Exception("Ticker already exists");s.add(new Stock(sym,f.getOrDefault("name",""),price,price,now()));writeStocks(s);}ok(x);}
   static void setPrice(HttpExchange x,String sym)throws Exception{double price=num(form(x).get("price"));if(price<=0)throw new Exception("Price must be positive"); synchronized(LOCK){var s=readStocks();boolean found=false;for(int i=0;i<s.size();i++)if(s.get(i).symbol.equalsIgnoreCase(sym)){var a=s.get(i);s.set(i,new Stock(a.symbol,a.name,price,a.price,now()));found=true;}if(!found)throw new Exception("Ticker not found");writeStocks(s);settleDue(sym,price);}ok(x);}
   static void deleteStock(HttpExchange x,String sym)throws Exception{synchronized(LOCK){var cs=readCalls();if(cs.stream().anyMatch(c->c.symbol.equalsIgnoreCase(sym)))throw new Exception("Delete or keep its call history first; tickers with calls are protected.");var s=readStocks();s.removeIf(a->a.symbol.equalsIgnoreCase(sym));writeStocks(s);}ok(x);}
