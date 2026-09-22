@@ -1,0 +1,12 @@
+MarketLedger Pro V5P.2.1 — Premarket Feed Diagnostics / Adaptive SIP→IEX
+
+Live validation at 07:29 ET showed fresh quotes but ~900-minute-old 5-minute bars.
+V5P.2 requested Alpaca IEX bars during PRE. IEX is a single-exchange feed and can have fresh quotes while no qualifying pre-market trades produce current bars.
+
+Changes:
+- /api/session-bars/{symbol} tries consolidated Alpaca SIP first.
+- If SIP is not entitled (HTTP 401/403), automatically falls back to IEX.
+- Browser still merges authenticated bars with Yahoo includePrePost base.
+- No quote-derived/synthetic candles or synthetic volume.
+- Unavailable session bars return provider/feed/HTTP diagnostics.
+- BUY/STRONG thresholds, V5N.1 Evidence Fusion, V5M.7.1 news classifier, and 58-stock universe unchanged.

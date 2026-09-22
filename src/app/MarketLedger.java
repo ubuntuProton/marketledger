@@ -1328,11 +1328,18 @@ public class MarketLedger {
     String phase=marketPhaseServer();if(!phase.equals("PRE")&&!phase.equals("REGULAR")&&!phase.equals("POST")){json(x,200,"{\"available\":false,\"phase\":"+q(phase)+",\"reason\":\"Session bars are used for PRE/REGULAR/POST\"}");return;}
     String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);ZonedDateTime now=ZonedDateTime.now(ZoneOffset.UTC),start=now.minusHours(18);
     String u="https://data.alpaca.markets/v2/stocks/"+enc+"/bars?timeframe=5Min&start="+URLEncoder.encode(start.toInstant().toString(),StandardCharsets.UTF_8)+"&end="+URLEncoder.encode(now.toInstant().toString(),StandardCharsets.UTF_8)+"&limit=1000&adjustment=raw";
-    HttpResponse<String> hist=alpacaGet(u,"iex");String hb=hist.statusCode()==200?hist.body():"";
-    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","iex");String lb=latest.statusCode()==200?latest.body():"";
-    String combined=hb;if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\"bar\"\\s*:\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=hb+bm.group(1);}
-    try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_SESSION_IEX","CURRENT_SESSION_IEX_HISTORY_PLUS_LATEST");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
-    catch(Exception e){json(x,200,"{\"available\":false,\"provider\":\"ALPACA_SESSION_IEX\",\"phase\":"+q(phase)+",\"historicalHttp\":"+hist.statusCode()+",\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
+    // Prefer consolidated SIP when entitled. IEX is a single exchange and can have fresh
+    // quotes while no qualifying pre-market trades produce a current bar.
+    HttpResponse<String> hist=alpacaGet(u,"sip");
+    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","sip");
+    String selectedFeed="sip";
+    if(hist.statusCode()==401||hist.statusCode()==403||latest.statusCode()==401||latest.statusCode()==403){
+      hist=alpacaGet(u,"iex");latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","iex");selectedFeed="iex";
+    }
+    String hb=hist.statusCode()==200?hist.body():"",lb=latest.statusCode()==200?latest.body():"";
+    String combined=hb;if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\"bar\"\\s*:\\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=hb+bm.group(1);}
+    try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_SESSION_"+selectedFeed.toUpperCase(Locale.ROOT),"CURRENT_SESSION_"+selectedFeed.toUpperCase(Locale.ROOT)+"_HISTORY_PLUS_LATEST");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
+    catch(Exception e){json(x,200,"{\"available\":false,\"provider\":"+q("ALPACA_SESSION_"+selectedFeed.toUpperCase(Locale.ROOT))+",\"feed\":"+q(selectedFeed)+",\"phase\":"+q(phase)+",\"historicalHttp\":"+hist.statusCode()+",\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
   }
 
   static String marketPhaseServer(){
