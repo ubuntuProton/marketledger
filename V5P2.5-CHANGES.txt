@@ -1,0 +1,24 @@
+MarketLedger Pro V5P.2.5 — Early Accumulation Intelligence
+
+Purpose
+- Surface developing overnight/pre-market bullish participation before the existing 3-current-candle execution gate is satisfied.
+- Keep attention intelligence separate from executable BUY/STRONG status.
+
+Added
+- Accumulation score for OVERNIGHT and PRE phases.
+- Extended-session VWAP hold.
+- Estimated up/down volume from green/red 5-minute candle volume (explicitly not aggressor-side order flow).
+- Participation acceleration from recent vs preceding extended-session bars.
+- Higher-low structure and session-high proximity.
+- Positive-gap retention with chase-risk penalty.
+- Sector peer accumulation breadth.
+- Separate data-confidence score based on observed bar coverage and quote quality.
+- New attention states: EARLY BULLISH WATCH and ACCUMULATING.
+- Radar displays accumulation score, data confidence, observed bars, estimated up-volume and sector breadth.
+
+Preserved
+- Existing V5P.2.4 execution gates including the 3-current-extended-hours-candle confirmation requirement.
+- Existing spread/liquidity/stale-data/chase/event gates.
+- V5N.1 technical/evidence thresholds.
+- V5M.8.2.3 news freshness, subject ownership and strict entity identity protections.
+- News never creates BUY/STRONG by itself.
