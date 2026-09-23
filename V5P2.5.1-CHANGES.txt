@@ -1,0 +1,9 @@
+MarketLedger Pro V5P.2.5.1 — Accumulation Performance Hotfix
+
+Fixes UI freezing/regression introduced by V5P.2.5.
+- Bulk 58-symbol analysis no longer rebuilds the entire dashboard after every individual ticker.
+- Dashboard renders once after the bulk cycle, while the lightweight progress text continues to update.
+- Early-accumulation base calculations are cached per immutable analysis result.
+- Sector-breadth calculations are cached per render cycle.
+- Preserves V5P.2.5 early accumulation scoring and all V5N.1 execution/risk gates.
+- No BUY/STRONG thresholds were loosened.
