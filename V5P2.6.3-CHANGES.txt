@@ -1,0 +1,10 @@
+MarketLedger Pro V5P.2.6.3 — Quote Integrity + Fallback Completion Guard
+
+- Fixed extendedHoursSetup technicalScore parameter mismatch that caused "technicalScore is not defined" on quote-backed symbols.
+- Quote-only prices now require the appropriate freshness flag: barFresh for last-bar price or quoteFresh for bid/ask midpoint.
+- Quote-only prices must be within 20% of the latest available candle reference to be VERIFIED.
+- Unverified quote prices are not displayed as live prices and cannot enter PRE price-only tape, accumulation, breadth, V5O technical scoring, or setup promotion.
+- PRE tape accepts price-only observations only after quote integrity verification; provider-volume bars remain unchanged.
+- Symbols with neither sufficient candles nor a verifiable fresh quote now receive DATA UNAVAILABLE instead of remaining Not analyzed.
+- Quote-only detail view exposes verification state, raw quote, reference price, and divergence when available.
+- Existing execution thresholds, V5N.1, news/entity guards, liquidity/spread/chase gates, mobile-fit fixes and bounded analysis concurrency are unchanged.
