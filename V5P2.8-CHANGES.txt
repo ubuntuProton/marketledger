@@ -1,0 +1,11 @@
+MarketLedger V5P.2.8 — True Overnight Buy/Sell Pressure Intelligence
+
+- Corrects the visible header to V5P.2.8.
+- Separates price-structure evidence from real provider-volume evidence.
+- Price-only/latest-only observations never manufacture volume.
+- Without >=3 provider-volume bars and >=2 directional bars, the engine reports STRUCTURE ONLY / VOLUME PRESSURE UNAVAILABLE and cannot promote a symbol as accumulating.
+- With adequate volume, reports candle-estimated buy volume, sell volume, buy/sell ratio, net pressure, extended-session VWAP delta, and pressure state.
+- STRONG ACCUMULATION requires positive net pressure plus price above extended-session VWAP and confidence gates.
+- DISTRIBUTION is explicitly identified when estimated directional volume is materially negative.
+- Buy/sell pressure is explicitly candle-direction estimated volume, not exchange aggressor-side order flow.
+- V5P.2.7.2 candle freshness/recovery and stale-data blocking remain intact.
