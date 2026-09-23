@@ -1,0 +1,21 @@
+MarketLedger Pro V5P.2.6.5 — Candle Freshness Authority Guard
+
+Freshness authority for the latest usable 5-minute candle:
+- 0–15m CURRENT: normal technical use.
+- 16–30m AGING: score remains visible with an aging label.
+- 31–60m STALE: score remains historical context, but setup promotion, accumulation and session-intelligence promotion are blocked.
+- >60m EXPIRED: current Technical displays N/A; last technical score is retained only as historical context.
+
+Expired behavior:
+- Fresh quote + expired candle => PRICE LIVE • TECHNICAL EXPIRED.
+- Stale quote + expired candle => MARKET DATA STALE.
+- Extended-hours, pre-market, pre-open and opening setup eligibility are disabled.
+- Accumulation/theme breadth and session intelligence ignore stale/expired candle structure.
+- V5O current-technical contribution falls back to neutral rather than using stale/expired technical score, with an additional data-age risk penalty.
+- Historical candles remain retained for charts/reference; no candles are fabricated.
+
+Preserved:
+- V5P.2.6.4 provider provenance/cross-source sanity guard.
+- V5P.2.6.3 quote integrity/fallback completion.
+- V5P.2.6.1 mobile fit and bounded concurrency.
+- V5N.1 evidence fusion and existing BUY/STRONG, spread/liquidity/chase/news/entity rules.
