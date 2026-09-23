@@ -1,0 +1,8 @@
+MarketLedger Pro V5P.2.6.2 — Quote-Backed Baseline Analysis
+
+- Creates a truthful quote-backed WAIT baseline when a fresh live quote exists but fewer than 10 usable candles are available.
+- Quote-backed rows show Technical N/A instead of inventing RSI/EMA/VWAP/ATR/volume or a technical score.
+- Preserves V5P.2.6 PRE tape observations and reports PRICE ACCUMULATION only from retained price observations; real volume remains required for PRICE + VOLUME CONFIRMED.
+- Quote-only states are excluded from technical setup queue/session intelligence and do not create BUY/STRONG signals.
+- Full candle-backed analysis automatically replaces the quote-only baseline as soon as sufficient OHLCV returns.
+- Preserves V5P.2.6.1 mobile fit and bounded-concurrency refresh architecture.
