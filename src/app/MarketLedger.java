@@ -1430,13 +1430,13 @@ public class MarketLedger {
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
     Properties p=marketSettings();if(!p.getProperty("provider","YAHOO").equals("ALPACA")){json(x,200,"{\"available\":false,\"reason\":\"Alpaca not configured\"}");return;}
     String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);
-    // V5P.2.7.1: BOATS history is disabled for this deployment after confirmed entitlement HTTP 403.
-    // Fetch only the entitled current overnight latest bar; never imply that it is a historical sequence.
+    // V5P.2.7.1: BOATS history is entitlement-blocked (403) on this deployment. Do not probe it per symbol.
+    // Alpaca feed=overnight latest is retained as one genuine external bar; no missing history is synthesized.
     HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","overnight");String lb=latest.statusCode()==200?latest.body():"";
     String combined="";
     if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\"bar\"\\s*:\\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=bm.group(1);}
-    try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_OVERNIGHT_LATEST","LATEST_ONLY_NO_BOATS_HISTORY");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
-    catch(Exception e){json(x,200,"{\"available\":false,\"provider\":\"ALPACA_OVERNIGHT_LATEST\",\"boatsDisabled\":true,\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
+    try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_OVERNIGHT_LATEST","REALTIME_LATEST_ONLY");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
+    catch(Exception e){json(x,200,"{\"available\":false,\"provider\":\"ALPACA_OVERNIGHT_LATEST\",\"latestHttp\":"+latest.statusCode()+",\"reason\":"+q(e.getMessage())+"}");}
   }
 
 
@@ -1454,11 +1454,9 @@ public class MarketLedger {
     Properties p=marketSettings();if(!p.getProperty("provider","YAHOO").equals("ALPACA")){json(x,200,"{\"available\":false,\"reason\":\"Alpaca not configured\"}");return;}
     String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);ZonedDateTime now=ZonedDateTime.now(ZoneOffset.UTC),start=now.minusHours(18);
     String u="https://data.alpaca.markets/v2/stocks/"+enc+"/bars?timeframe=5Min&start="+URLEncoder.encode(start.toInstant().toString(),StandardCharsets.UTF_8)+"&end="+URLEncoder.encode(now.toInstant().toString(),StandardCharsets.UTF_8)+"&limit=1000&adjustment=raw";
-    // V5P.2.7 diagnostics mirror the feeds MarketLedger can actually use on this account.
-    // Do not probe SIP (known entitlement 403) or invalid delayed_sip.
+    // V5P.2.7.1 diagnostics mirror usable feeds only. SIP, delayed_sip, and entitlement-blocked BOATS are not probed.
     StringBuilder fs=new StringBuilder();
     HttpResponse<String> iex=alpacaGet(u,"iex");fs.append(feedBarDiag("iex",iex));
-    fs.append(',').append("{\"feed\":\"boats\",\"http\":403,\"barCount\":0,\"latestTs\":\"\",\"latestAgeMin\":-1,\"message\":\"disabled after confirmed subscription entitlement rejection; no recurring request made\"}");
     HttpResponse<String> overnightLatest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","overnight");
     fs.append(',').append(feedBarDiag("overnight_latest",overnightLatest));
     long yahooAge=-1;String yahooTs="";int yahooCount=0;String yahooErr="";
