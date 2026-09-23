@@ -1,0 +1,10 @@
+MarketLedger Pro V5P.2.6.1 — Mobile Fit + Analysis Loading Hotfix
+
+- Processes the 58-stock analysis queue with bounded concurrency of 4 instead of strictly sequential requests.
+- Automatic analysis is completion-driven: the next cycle is scheduled 75 seconds after the prior cycle finishes, preventing overlapping timer pressure.
+- Keeps the existing analysisRunning overlap guard and provider/risk logic.
+- Improves pending/failure text: PRICE LIVE • CANDLES UNAVAILABLE, QUOTE CHECKED • CANDLES UNAVAILABLE, or WAITING IN ANALYSIS QUEUE.
+- Locks page-level horizontal overflow on phones while preserving local horizontal scrolling for genuinely wide tables.
+- Makes cards, grids, toolbars, controls, headlines, and long text shrink/wrap within the viewport.
+- Stacks mobile toolbar actions and adds narrow-phone single-column fallbacks.
+- No BUY/STRONG thresholds, V5N.1 evidence fusion, V5P.2.6 tape rules, news guards, liquidity/spread/chase gates, or session rules changed.
