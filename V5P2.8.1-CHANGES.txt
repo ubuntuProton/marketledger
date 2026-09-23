@@ -1,0 +1,9 @@
+V5P.2.8.1 — Extended-Hours Volume Acquisition & Provenance Guard
+
+- Adds /api/extended-volume/{symbol} using Yahoo 1-minute includePrePost data.
+- Aggregates only provider-reported positive 1-minute volume into existing 5-minute candle buckets.
+- Does not replace technical OHLC candles.
+- Does not synthesize or infer missing volume.
+- Tags enriched bars YAHOO_EXTENDED_VOLUME / PROVIDER_REPORTED_1M_AGGREGATED.
+- Preserves V5P.2.8 STRUCTURE_ONLY / VOLUME PRESSURE UNAVAILABLE when volume coverage is insufficient.
+- Preserves V5P.2.7.2 candle freshness recovery and all risk/liquidity/technical gates.

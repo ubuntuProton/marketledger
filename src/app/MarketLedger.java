@@ -914,6 +914,7 @@ public class MarketLedger {
       if(p.startsWith("/api/microstructure/") && m.equals("GET")) { microstructure(x,p.substring("/api/microstructure/".length())); return; }
       if(p.startsWith("/api/overnight-bars/") && m.equals("GET")) { overnightBars(x,p.substring("/api/overnight-bars/".length())); return; }
       if(p.startsWith("/api/session-bars/") && m.equals("GET")) { sessionBars(x,p.substring("/api/session-bars/".length())); return; }
+      if(p.startsWith("/api/extended-volume/") && m.equals("GET")) { extendedVolumeBars(x,p.substring("/api/extended-volume/".length())); return; }
       if(p.startsWith("/api/feed-diagnostics/") && m.equals("GET")) { feedDiagnostics(x,p.substring("/api/feed-diagnostics/".length())); return; }
       if(p.matches("/api/notes/\\d+") && m.equals("DELETE")) { deleteNote(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.equals("/api/quotes/refresh") && m.equals("POST")) { refreshQuotes(x); return; }
@@ -1507,6 +1508,19 @@ public class MarketLedger {
     HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7.2").header("Accept","application/json").header("Cache-Control","no-cache").GET().build(),HttpResponse.BodyHandlers.ofString());
     if(r.statusCode()!=200||!usableYahooBody(r.body()))throw new Exception(host+" HTTP "+r.statusCode()+" / unusable candle payload");return r.body();
   }
+  // V5P.2.8.1: dedicated 1-minute Yahoo extended-hours payload used only to enrich
+  // existing 5-minute candles with provider-reported volume. It never invents volume,
+  // never replaces OHLC technical candles, and failure leaves V5P.2.8 STRUCTURE_ONLY intact.
+  static void extendedVolumeBars(HttpExchange x,String raw)throws Exception{
+    String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
+    String u="https://query1.finance.yahoo.com/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=1d&interval=1m&includePrePost=true&events=div%2Csplits&_mlv="+System.currentTimeMillis();
+    HttpClient client=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();
+    HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.8.1").header("Accept","application/json").header("Cache-Control","no-cache").GET().build(),HttpResponse.BodyHandlers.ofString());
+    if(r.statusCode()!=200||r.body()==null||r.body().contains("\"result\":null"))throw new Exception("Yahoo extended-volume HTTP "+r.statusCode());
+    x.getResponseHeaders().set("X-MarketLedger-Volume-Source","YAHOO_1M_EXTENDED");
+    bytes(x,200,"application/json; charset=utf-8",r.body().getBytes(StandardCharsets.UTF_8));
+  }
+
   static void marketData(HttpExchange x,String raw)throws Exception{
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]",""); if(sym.isBlank()) throw new Exception("Invalid ticker");
     String best=null,bestSource="NONE";long bestAge=Long.MAX_VALUE;boolean recovery=false;StringBuilder diag=new StringBuilder();
