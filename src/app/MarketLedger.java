@@ -1496,11 +1496,35 @@ public class MarketLedger {
     if(n<10)throw new Exception("No usable Alpaca candles for "+sym);
     return "{\"chart\":{\"result\":[{\"meta\":{\"symbol\":"+q(sym)+",\"provider\":\"ALPACA_IEX_FALLBACK\"},\"timestamp\":["+ts+"],\"indicators\":{\"quote\":[{\"open\":["+op+"],\"high\":["+hi+"],\"low\":["+lo+"],\"close\":["+cl+"],\"volume\":["+vo+"]}]}}],\"error\":null}}";
   }
+  // V5P.2.7.2: derive freshness from the actual last candle timestamp, never request/quote time.
+  static long yahooBodyAgeMinutes(String body){
+    try{if(body==null)return Long.MAX_VALUE;var m=java.util.regex.Pattern.compile("\"timestamp\"\\s*:\\s*\\[([^]]*)\\]").matcher(body);if(!m.find())return Long.MAX_VALUE;String[] a=m.group(1).split(",");for(int i=a.length-1;i>=0;i--){String v=a[i].trim();if(v.isBlank()||v.equals("null"))continue;long sec=Long.parseLong(v);return Math.max(0,(System.currentTimeMillis()-sec*1000L)/60000L);} }catch(Exception ignored){}return Long.MAX_VALUE;
+  }
+  static boolean usableYahooBody(String body){return body!=null&&!body.contains("\"result\":null")&&body.contains("\"timestamp\"")&&yahooBodyAgeMinutes(body)<Long.MAX_VALUE;}
+  static String yahooChartRequest(String sym,String host,boolean bust)throws Exception{
+    String u="https://"+host+"/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=5d&interval=5m&includePrePost=true&events=div%2Csplits"+(bust?"&_mlcb="+System.currentTimeMillis():"");
+    HttpClient client=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();
+    HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7.2").header("Accept","application/json").header("Cache-Control","no-cache").GET().build(),HttpResponse.BodyHandlers.ofString());
+    if(r.statusCode()!=200||!usableYahooBody(r.body()))throw new Exception(host+" HTTP "+r.statusCode()+" / unusable candle payload");return r.body();
+  }
   static void marketData(HttpExchange x,String raw)throws Exception{
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]",""); if(sym.isBlank()) throw new Exception("Invalid ticker");
-    String u="https://query1.finance.yahoo.com/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=5d&interval=5m&includePrePost=true&events=div%2Csplits";
-    try{HttpClient client=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.5").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());String body=r.body();if(r.statusCode()==200&&body!=null&&!body.contains("\"result\":null")&&body.contains("\"timestamp\"")){bytes(x,200,"application/json; charset=utf-8",body.getBytes(StandardCharsets.UTF_8));return;}}catch(Exception ignored){}
-    try{String body=alpacaYahooFallback(sym);bytes(x,200,"application/json; charset=utf-8",body.getBytes(StandardCharsets.UTF_8));}catch(Exception e){throw new Exception("No candle data from Yahoo or Alpaca fallback for "+sym+": "+e.getMessage());}
+    String best=null,bestSource="NONE";long bestAge=Long.MAX_VALUE;boolean recovery=false;StringBuilder diag=new StringBuilder();
+    try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false);long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR");}
+    // Any candle older than 45m is stale enough to warrant an independent symbol recovery.
+    if(bestAge>45){
+      recovery=true;
+      try{String b=yahooChartRequest(sym,"query2.finance.yahoo.com",true);long a=yahooBodyAgeMinutes(b);diag.append(", yahooSingle=").append(a).append("m");if(a<bestAge){best=b;bestAge=a;bestSource="YAHOO_SINGLE";}}catch(Exception e){diag.append(", yahooSingle=ERR");}
+      try{String b=alpacaYahooFallback(sym);long a=yahooBodyAgeMinutes(b);diag.append(", alpaca=").append(a).append("m");if(a<bestAge){best=b;bestAge=a;bestSource="ALPACA_IEX_FALLBACK";}}catch(Exception e){diag.append(", alpaca=ERR");}
+    }
+    if(best==null)throw new Exception("No candle data from Yahoo or Alpaca fallback for "+sym+" ("+diag+")");
+    String state=bestAge<=15?"CURRENT":bestAge<=45?"AGING":bestAge<=60?"STALE":"EXPIRED";
+    x.getResponseHeaders().set("X-MarketLedger-Candle-Source",bestSource);
+    x.getResponseHeaders().set("X-MarketLedger-Candle-Age-Min",String.valueOf(bestAge));
+    x.getResponseHeaders().set("X-MarketLedger-Candle-State",state);
+    x.getResponseHeaders().set("X-MarketLedger-Recovery-Attempted",String.valueOf(recovery));
+    System.out.println("V5P.2.7.2 candle recovery: "+sym+" source="+bestSource+" age="+bestAge+"m state="+state+" recovery="+recovery+" "+diag);
+    bytes(x,200,"application/json; charset=utf-8",best.getBytes(StandardCharsets.UTF_8));
   }
 
   static String lanIp(){

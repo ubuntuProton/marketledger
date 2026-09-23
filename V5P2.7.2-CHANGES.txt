@@ -1,0 +1,12 @@
+MarketLedger Pro V5P.2.7.2 — Per-Symbol Fresh-Candle Recovery Guard
+
+- Preserves V5P.2.7.1 provider entitlement/provenance behavior.
+- Candle freshness is derived from the actual final candle timestamp.
+- Freshness authority: CURRENT <=15m; AGING 16-45m; STALE 46-60m; EXPIRED >60m.
+- Any Yahoo candle older than 45m triggers an independent cache-busted query2 Yahoo recovery request.
+- Alpaca IEX is considered only as an additional fallback candidate when configured.
+- The freshest valid candidate wins; HTTP 200 alone never establishes freshness.
+- Failed recovery never rewrites an old candle to 0m; its true age remains visible and existing setup-promotion guards remain authoritative.
+- Response diagnostics expose source, candle age, freshness state and whether recovery was attempted.
+- No SIP, delayed_sip, or BOATS historical probes were restored.
+- V5N.1 scoring, news/catalyst logic, sector logic, liquidity/risk gates and V5O research logic are unchanged.
