@@ -1,0 +1,11 @@
+MarketLedger Pro V5P.2.5.3 — Confidence + Setup Consistency Guard
+
+- Preserves V5P.2.5.2 current-session filtering, directional-volume accuracy, thematic breadth and performance fixes.
+- Separates observed accumulation strength from confidence-calibrated intelligence.
+- Thin/moderate samples can still surface developing accumulation, but cannot display 100/100 intelligence solely from high observed strength.
+- EARLY BULLISH WATCH continues to require both calibrated score and minimum confidence.
+- Adds an extended-hours setup consistency guard:
+  * EH_STRONG requires underlying technical structure >= 60/100.
+  * EH_SETUP requires underlying technical structure >= 45/100.
+  * Otherwise the extended-hours engine is downgraded to EH_WATCH with an explicit reason.
+- Does not change regular-session BUY/STRONG thresholds, news/entity guards, spread/liquidity gates, chase protection, event gates, or V5N.1 evidence fusion.
