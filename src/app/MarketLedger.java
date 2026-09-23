@@ -1455,8 +1455,13 @@ public class MarketLedger {
     Properties p=marketSettings();if(!p.getProperty("provider","YAHOO").equals("ALPACA")){json(x,200,"{\"available\":false,\"reason\":\"Alpaca not configured\"}");return;}
     String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);ZonedDateTime now=ZonedDateTime.now(ZoneOffset.UTC),start=now.minusHours(18);
     String u="https://data.alpaca.markets/v2/stocks/"+enc+"/bars?timeframe=5Min&start="+URLEncoder.encode(start.toInstant().toString(),StandardCharsets.UTF_8)+"&end="+URLEncoder.encode(now.toInstant().toString(),StandardCharsets.UTF_8)+"&limit=1000&adjustment=raw";
-    String[] feeds={"sip","iex","delayed_sip"};StringBuilder fs=new StringBuilder();
-    for(int i=0;i<feeds.length;i++){HttpResponse<String> r=alpacaGet(u,feeds[i]);if(i>0)fs.append(',');fs.append(feedBarDiag(feeds[i],r));}
+    // V5P.2.7 diagnostics mirror the feeds MarketLedger can actually use on this account.
+    // Do not probe SIP (known entitlement 403) or invalid delayed_sip.
+    StringBuilder fs=new StringBuilder();
+    HttpResponse<String> iex=alpacaGet(u,"iex");fs.append(feedBarDiag("iex",iex));
+    HttpResponse<String> boats=alpacaGet(u,"boats");fs.append(',').append(feedBarDiag("boats",boats));
+    HttpResponse<String> overnightLatest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","overnight");
+    fs.append(',').append(feedBarDiag("overnight_latest",overnightLatest));
     long yahooAge=-1;String yahooTs="";int yahooCount=0;String yahooErr="";
     try{List<PricePoint> yp=historicalPoints(sym);yahooCount=yp.size();if(!yp.isEmpty()){PricePoint y=yp.get(yp.size()-1);yahooAge=Math.max(0,(System.currentTimeMillis()-y.ts())/60000);yahooTs=Instant.ofEpochMilli(y.ts()).toString();}}catch(Exception e){yahooErr=String.valueOf(e.getMessage());}
     json(x,200,"{\"symbol\":"+q(sym)+",\"phase\":"+q(marketPhaseServer())+",\"serverTime\":"+q(Instant.now().toString())+",\"alpaca\":["+fs+"],\"yahoo\":{\"barCount\":"+yahooCount+",\"latestTs\":"+q(yahooTs)+",\"latestAgeMin\":"+yahooAge+",\"error\":"+q(yahooErr)+"}}");
@@ -1468,14 +1473,11 @@ public class MarketLedger {
     String phase=marketPhaseServer();if(!phase.equals("PRE")&&!phase.equals("REGULAR")&&!phase.equals("POST")){json(x,200,"{\"available\":false,\"phase\":"+q(phase)+",\"reason\":\"Session bars are used for PRE/REGULAR/POST\"}");return;}
     String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);ZonedDateTime now=ZonedDateTime.now(ZoneOffset.UTC),start=now.minusHours(18);
     String u="https://data.alpaca.markets/v2/stocks/"+enc+"/bars?timeframe=5Min&start="+URLEncoder.encode(start.toInstant().toString(),StandardCharsets.UTF_8)+"&end="+URLEncoder.encode(now.toInstant().toString(),StandardCharsets.UTF_8)+"&limit=1000&adjustment=raw";
-    // Prefer consolidated SIP when entitled. IEX is a single exchange and can have fresh
-    // quotes while no qualifying pre-market trades produce a current bar.
-    HttpResponse<String> hist=alpacaGet(u,"sip");
-    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","sip");
-    String selectedFeed="sip";
-    if(hist.statusCode()==401||hist.statusCode()==403||latest.statusCode()==401||latest.statusCode()==403){
-      hist=alpacaGet(u,"iex");latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","iex");selectedFeed="iex";
-    }
+    // V5P.2.7: this deployment's Alpaca entitlement does not include recent SIP bars.
+    // Use the supported IEX feed directly instead of generating a recurring SIP 403 on every symbol.
+    HttpResponse<String> hist=alpacaGet(u,"iex");
+    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","iex");
+    String selectedFeed="iex";
     String hb=hist.statusCode()==200?hist.body():"",lb=latest.statusCode()==200?latest.body():"";
     String combined=hb;if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\"bar\"\\s*:\\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=hb+bm.group(1);}
     try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_SESSION_"+selectedFeed.toUpperCase(Locale.ROOT),"CURRENT_SESSION_"+selectedFeed.toUpperCase(Locale.ROOT)+"_HISTORY_PLUS_LATEST");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}

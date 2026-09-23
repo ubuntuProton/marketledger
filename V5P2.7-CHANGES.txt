@@ -1,0 +1,9 @@
+MarketLedger Pro V5P.2.7 — Market Data Source Recovery
+
+- Removed recurring Alpaca SIP requests from the normal session-bar path for the current account tier; session bars now request supported IEX directly.
+- Removed invalid delayed_sip from diagnostics.
+- Diagnostics now inspect IEX, BOATS, Alpaca overnight latest, and Yahoo so the report matches the feeds actually used by MarketLedger.
+- Preserved BOATS delayed history + real Alpaca overnight latest behavior; these are explicitly provenance-tagged.
+- Provider-health counters now use unique-symbol Sets, so concurrent/repeated attempts cannot report impossible counts above the 58-stock watchlist.
+- Candle parsing now preserves provider metadata returned by the server rather than overwriting it with a generic browser label.
+- No BUY/STRONG thresholds, catalyst logic, liquidity/spread gates, candle-freshness authority, or PRE tape integrity rules were loosened.
