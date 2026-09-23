@@ -1,0 +1,8 @@
+V5P.2.6 Live Premarket Tape Collector
+- Starts a browser-local current-session PRE tape at 04:00 ET and resets by New York trading date.
+- Persists actual provider 5-minute premarket OHLCV bars in localStorage so later provider gaps do not erase already observed current-session bars.
+- Records fresh quote observations into 5-minute price-only buckets for price-structure continuity.
+- Price-only observations NEVER invent volume and are not merged into technical OHLCV calculations.
+- PRE tape UI explicitly distinguishes PRICE + VOLUME CONFIRMED, PRICE ACCUMULATION, and INSUFFICIENT TAPE.
+- Accumulation intelligence reports provider-volume vs price-only tape coverage.
+- Preserves V5P.2.5.3 confidence calibration, setup consistency, execution/risk/liquidity gates and V5N.1.
