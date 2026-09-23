@@ -1,0 +1,11 @@
+MarketLedger Pro V5P.2.5.2 — Accumulation Accuracy Hotfix
+
+- Corrects OVERNIGHT accumulation window: 20:00-04:00 ET only; no reuse of the already-finished morning session after 20:00 ET.
+- PRE accumulation is strictly 04:00-09:30 ET for the current trading date.
+- Estimated directional up-volume now uses valid positive OHLC bars, excludes neutral/doji bars from the directional ratio, and never claims exchange aggressor-side flow.
+- Data confidence now reflects usable directional bars and latest extended-session candle freshness.
+- Sector breadth now uses MarketLedger's actual thematic watchlist groups (for example Memory / Storage and Cybersecurity), not broad ETF proxies such as QQQ/XLK.
+- Breadth denominator is the actual watchlist theme membership; unanalysed members remain visible in the denominator rather than silently inflating confirmation.
+- EARLY BULLISH WATCH now requires sufficient accumulation confidence.
+- Preserves V5P.2.5.1 performance caching and deferred bulk rendering.
+- No changes to BUY/STRONG execution thresholds, spread/liquidity/chase gates, V5N.1 evidence fusion, V5P.2.4 session rules, or V5M.8.2.3 news/entity protections.
