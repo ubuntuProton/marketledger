@@ -1,0 +1,11 @@
+MarketLedger Pro V5P.2.7.1 — Overnight Tape Provenance & Entitlement Guard
+
+- Disables BOATS historical requests after the confirmed subscription entitlement HTTP 403.
+- Overnight endpoint now fetches only the entitled ALPACA_OVERNIGHT_LATEST bar and labels it LATEST_ONLY_NO_BOATS_HISTORY.
+- Diagnostics report BOATS as disabled without making another BOATS network request.
+- Separates provider-volume bars, latest-only provider bars, and local price observations in accumulation intelligence.
+- VWAP, estimated directional volume, and participation acceleration require genuine positive-volume provider bars.
+- Confidence is capped at 25 with fewer than 3 genuine provider-volume bars and at 45 with fewer than 6.
+- Extended-hours setup confirmation requires at least 3 genuine provider OHLCV bars; one latest-only bar cannot masquerade as a sequence.
+- PRE tape preserves source provenance and marks volumeKnown only when actual positive provider volume exists.
+- Existing candle freshness, provider sanity, risk/liquidity, news, and BUY/STRONG thresholds are not loosened.
