@@ -1,0 +1,10 @@
+V5P.2.6.4 — Provider Provenance + Cross-Source Price Sanity Guard
+
+- Tags every candle with provider provenance (Yahoo market / Alpaca overnight / Alpaca session).
+- Retains the latest price/timestamp by provider family for integrity diagnostics.
+- Cross-checks independent Yahoo vs Alpaca/live-provider prices when both are available.
+- If independent providers disagree by more than 20%, the symbol is quarantined as SOURCE CONFLICT.
+- Quarantined symbols cannot enter technical scoring, accumulation intelligence, thematic breadth, setup promotion, or V5O research ranking.
+- Single-source data remains usable but is explicitly labeled SINGLE-SOURCE instead of pretending independent verification exists.
+- Adds provider provenance to stock detail and phone data-freshness display.
+- Preserves V5P.2.6 PRE tape, V5P.2.6.1 mobile/performance fixes, V5P.2.6.2 quote fallback, V5P.2.6.3 quote integrity, V5N.1, and all execution/risk/news gates.
