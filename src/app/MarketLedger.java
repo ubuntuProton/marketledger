@@ -42,6 +42,17 @@ public class MarketLedger {
     return Paths.get(home,".marketledger-pro");
   }
   static final Object LOCK = new Object();
+  // V5P.2.8.2: shared provider cache and lightweight bandwidth telemetry.
+  record CachedText(String body,long storedAt) {}
+  static final java.util.concurrent.ConcurrentHashMap<String,CachedText> PROVIDER_CACHE=new java.util.concurrent.ConcurrentHashMap<>();
+  static final java.util.concurrent.atomic.AtomicLong PROVIDER_CACHE_HITS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong PROVIDER_CACHE_MISSES=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong YAHOO_NETWORK_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong RESPONSE_RAW_BYTES=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong RESPONSE_WIRE_BYTES=new java.util.concurrent.atomic.AtomicLong();
+  static long providerTtlMs(){String ph=marketPhaseServer();return ph.equals("CLOSED")?15*60_000L:ph.equals("OVERNIGHT")?120_000L:60_000L;}
+  static String cachedProvider(String key,long ttlMs){CachedText c=PROVIDER_CACHE.get(key);if(c!=null&&System.currentTimeMillis()-c.storedAt()<=ttlMs){PROVIDER_CACHE_HITS.incrementAndGet();return c.body();}if(c!=null)PROVIDER_CACHE.remove(key,c);PROVIDER_CACHE_MISSES.incrementAndGet();return null;}
+  static void cacheProvider(String key,String body){if(body!=null&&!body.isBlank())PROVIDER_CACHE.put(key,new CachedText(body,System.currentTimeMillis()));}
   static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
   // V5O.2 approved monitoring universe. This is merged into the persistent watchlist
@@ -192,8 +203,8 @@ public class MarketLedger {
   static boolean sameSession(String expected,long epochMs){String s=sessionForEpoch(epochMs); if(expected==null)return true; expected=expected.toUpperCase(Locale.ROOT); if(expected.equals("CLOSED"))return false; if(expected.equals("DISCOVERY")||expected.equals("CONFIRM")||expected.equals("AFTERNOON")||expected.equals("CLOSE")||expected.equals("REGULAR"))return s.equals("REGULAR"); return expected.equals(s);}
   static String sessionForEpoch(long ms){ZonedDateTime z=Instant.ofEpochMilli(ms).atZone(ZoneId.of("America/New_York"));int m=z.getHour()*60+z.getMinute();DayOfWeek d=z.getDayOfWeek();if(d==DayOfWeek.SATURDAY)return"CLOSED";if(d==DayOfWeek.SUNDAY)return m>=1200?"OVERNIGHT":"CLOSED";if(d==DayOfWeek.FRIDAY&&m>=1200)return"CLOSED";if(m<240||m>=1200)return"OVERNIGHT";if(m<570)return"PRE";if(m<960)return"REGULAR";return"POST";}
   static List<PricePoint> historicalPoints(String sym)throws Exception{
-    String u="https://query1.finance.yahoo.com/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=5d&interval=5m&includePrePost=true&events=div%2Csplits";
-    HttpClient c=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();HttpResponse<String> r=c.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(12)).header("User-Agent","Mozilla/5.0 MarketLedger/2.6").GET().build(),HttpResponse.BodyHandlers.ofString());if(r.statusCode()!=200)return List.of();String b=r.body();
+    // V5P.2.8.2: reuse the same Yahoo payload as the market endpoint instead of downloading it again.
+    String b;try{b=yahooChartRequest(sym,"query1.finance.yahoo.com",false);}catch(Exception e){return List.of();}
     var tm=java.util.regex.Pattern.compile("\\\"timestamp\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);var cm=java.util.regex.Pattern.compile("\\\"close\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);if(!tm.find()||!cm.find())return List.of();String[] ts=tm.group(1).split(","),cs=cm.group(1).split(",");var out=new ArrayList<PricePoint>();for(int i=0;i<Math.min(ts.length,cs.length);i++){try{String cv=cs[i].trim();if(cv.equals("null"))continue;out.add(new PricePoint(Long.parseLong(ts[i].trim())*1000L,Double.parseDouble(cv)));}catch(Exception ignored){}}return out;
   }
 
@@ -920,6 +931,7 @@ public class MarketLedger {
       if(p.equals("/api/quotes/refresh") && m.equals("POST")) { refreshQuotes(x); return; }
       if(p.startsWith("/api/market/") && m.equals("GET")) { marketData(x,p.substring("/api/market/".length())); return; }
       if(p.equals("/api/info") && m.equals("GET")) { boolean cloud=System.getenv("RENDER")!=null; json(x,200,"{\"port\":"+PORT+",\"lanIp\":"+q(lanIp())+",\"cloud\":"+cloud+"}"); return; }
+      if(p.equals("/api/bandwidth/status") && m.equals("GET")) { bandwidthStatus(x); return; }
       if(p.equals("/api/export") && m.equals("GET")) { exportCsv(x); return; }
       if(p.equals("/api/backup") && m.equals("GET")) { downloadBackup(x); return; }
       if(p.equals("/api/backup/restore") && m.equals("POST")) { restoreBackup(x); return; }
@@ -1503,10 +1515,19 @@ public class MarketLedger {
   }
   static boolean usableYahooBody(String body){return body!=null&&!body.contains("\"result\":null")&&body.contains("\"timestamp\"")&&yahooBodyAgeMinutes(body)<Long.MAX_VALUE;}
   static String yahooChartRequest(String sym,String host,boolean bust)throws Exception{
-    String u="https://"+host+"/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=5d&interval=5m&includePrePost=true&events=div%2Csplits"+(bust?"&_mlcb="+System.currentTimeMillis():"");
-    HttpClient client=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();
-    HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.7.2").header("Accept","application/json").header("Cache-Control","no-cache").GET().build(),HttpResponse.BodyHandlers.ofString());
-    if(r.statusCode()!=200||!usableYahooBody(r.body()))throw new Exception(host+" HTTP "+r.statusCode()+" / unusable candle payload");return r.body();
+    // V5P.2.8.2: cache by provider/symbol. Recovery requests are cached too, so concurrent UI consumers
+    // cannot fan out into duplicate Yahoo downloads. TTL stays short while markets are active.
+    String key="YAHOO|"+host+"|"+sym.toUpperCase(Locale.ROOT)+"|"+(bust?"RECOVERY":"PRIMARY");
+    String cached=cachedProvider(key,providerTtlMs());if(cached!=null)return cached;
+    synchronized(("ML-YAHOO-"+key).intern()){
+      cached=cachedProvider(key,providerTtlMs());if(cached!=null)return cached;
+      String u="https://"+host+"/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=5d&interval=5m&includePrePost=true&events=div%2Csplits"+(bust?"&_mlcb="+System.currentTimeMillis():"");
+      HttpClient client=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();
+      YAHOO_NETWORK_REQUESTS.incrementAndGet();
+      HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.8.2").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());
+      if(r.statusCode()!=200||!usableYahooBody(r.body()))throw new Exception(host+" HTTP "+r.statusCode()+" / unusable candle payload");
+      cacheProvider(key,r.body());return r.body();
+    }
   }
   // V5P.2.8.1: dedicated 1-minute Yahoo extended-hours payload used only to enrich
   // existing 5-minute candles with provider-reported volume. It never invents volume,
@@ -1539,6 +1560,11 @@ public class MarketLedger {
     x.getResponseHeaders().set("X-MarketLedger-Recovery-Attempted",String.valueOf(recovery));
     System.out.println("V5P.2.7.2 candle recovery: "+sym+" source="+bestSource+" age="+bestAge+"m state="+state+" recovery="+recovery+" "+diag);
     bytes(x,200,"application/json; charset=utf-8",best.getBytes(StandardCharsets.UTF_8));
+  }
+
+  static void bandwidthStatus(HttpExchange x)throws Exception{
+    long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
+    json(x,200,"{\"version\":\"V5P.2.8.2\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
   }
 
   static String lanIp(){
@@ -1684,7 +1710,12 @@ public class MarketLedger {
   }
 
   static byte[] resource(String n)throws IOException{try(InputStream in=MarketLedger.class.getResourceAsStream(n)){if(in==null)throw new FileNotFoundException(n);return in.readAllBytes();}}
-  static void bytes(HttpExchange x,int code,String type,byte[] b)throws IOException{x.getResponseHeaders().set("Content-Type",type);x.getResponseHeaders().set("Cache-Control","no-store");x.sendResponseHeaders(code,b.length);x.getResponseBody().write(b);x.close();}
+  static void bytes(HttpExchange x,int code,String type,byte[] b)throws IOException{
+    RESPONSE_RAW_BYTES.addAndGet(b.length);x.getResponseHeaders().set("Content-Type",type);x.getResponseHeaders().set("Cache-Control","no-store");x.getResponseHeaders().set("Vary","Accept-Encoding");
+    String ae=Optional.ofNullable(x.getRequestHeaders().getFirst("Accept-Encoding")).orElse("");byte[] out=b;
+    if(b.length>=1024&&ae.toLowerCase(Locale.ROOT).contains("gzip")){ByteArrayOutputStream bo=new ByteArrayOutputStream(Math.max(256,b.length/3));try(java.util.zip.GZIPOutputStream gz=new java.util.zip.GZIPOutputStream(bo)){gz.write(b);}out=bo.toByteArray();x.getResponseHeaders().set("Content-Encoding","gzip");}
+    RESPONSE_WIRE_BYTES.addAndGet(out.length);x.sendResponseHeaders(code,out.length);x.getResponseBody().write(out);x.close();
+  }
   static void json(HttpExchange x,int code,String s)throws IOException{bytes(x,code,"application/json; charset=utf-8",s.getBytes(StandardCharsets.UTF_8));}
   static void ok(HttpExchange x)throws IOException{json(x,200,"{\"ok\":true}");}
 }

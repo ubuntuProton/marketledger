@@ -1,0 +1,10 @@
+MarketLedger V5P.2.8.2 — Real-Time Data Efficiency, Bandwidth Guard & Volume Diagnostics
+
+- Adds a shared in-memory Yahoo provider cache with session-aware TTLs (60s active, 120s overnight, 15m closed).
+- Adds single-flight protection so concurrent consumers of the same Yahoo symbol cannot trigger duplicate provider downloads.
+- Reuses cached Yahoo candle payloads for historical-point consumers instead of issuing a second 5-day download.
+- Enables gzip for API/static responses >=1 KB when supported by the client, reducing Render outbound response bytes.
+- Adds /api/bandwidth/status telemetry for cache hits/misses, Yahoo network requests, raw response bytes, wire bytes and compression savings.
+- Changes automatic full-universe analysis cadence from 75s to 120s; manual Refresh analysis remains immediate.
+- Preserves V5P.2.7.2 freshness/recovery and V5P.2.8 pressure/risk/liquidity gates; no BUY/STRONG thresholds are loosened.
+- TradingView is intentionally not added as a market-data dependency.
