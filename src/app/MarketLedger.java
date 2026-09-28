@@ -48,6 +48,12 @@ public class MarketLedger {
   static final java.util.concurrent.atomic.AtomicLong PROVIDER_CACHE_HITS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong PROVIDER_CACHE_MISSES=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong YAHOO_NETWORK_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  // V5P.2.8.2.3: attribute actual Yahoo network downloads by caller.
+  static final java.util.concurrent.atomic.AtomicLong YAHOO_PRIMARY_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong YAHOO_RECOVERY_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong YAHOO_OUTCOME_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong YAHOO_EXTENDED_VOLUME_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong YAHOO_OTHER_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_RAW_BYTES=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_WIRE_BYTES=new java.util.concurrent.atomic.AtomicLong();
   // V5P.2.8.2.2: provider refresh budget guard.
@@ -220,7 +226,7 @@ public class MarketLedger {
   static String sessionForEpoch(long ms){ZonedDateTime z=Instant.ofEpochMilli(ms).atZone(ZoneId.of("America/New_York"));int m=z.getHour()*60+z.getMinute();DayOfWeek d=z.getDayOfWeek();if(d==DayOfWeek.SATURDAY)return"CLOSED";if(d==DayOfWeek.SUNDAY)return m>=1200?"OVERNIGHT":"CLOSED";if(d==DayOfWeek.FRIDAY&&m>=1200)return"CLOSED";if(m<240||m>=1200)return"OVERNIGHT";if(m<570)return"PRE";if(m<960)return"REGULAR";return"POST";}
   static List<PricePoint> historicalPoints(String sym)throws Exception{
     // V5P.2.8.2: reuse the same Yahoo payload as the market endpoint instead of downloading it again.
-    String b;try{b=yahooChartRequest(sym,"query1.finance.yahoo.com",false);}catch(Exception e){return List.of();}
+    String b;try{b=yahooChartRequest(sym,"query1.finance.yahoo.com",false,"OUTCOME");}catch(Exception e){return List.of();}
     var tm=java.util.regex.Pattern.compile("\\\"timestamp\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);var cm=java.util.regex.Pattern.compile("\\\"close\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(b);if(!tm.find()||!cm.find())return List.of();String[] ts=tm.group(1).split(","),cs=cm.group(1).split(",");var out=new ArrayList<PricePoint>();for(int i=0;i<Math.min(ts.length,cs.length);i++){try{String cv=cs[i].trim();if(cv.equals("null"))continue;out.add(new PricePoint(Long.parseLong(ts[i].trim())*1000L,Double.parseDouble(cv)));}catch(Exception ignored){}}return out;
   }
 
@@ -1530,7 +1536,7 @@ public class MarketLedger {
     try{if(body==null)return Long.MAX_VALUE;var m=java.util.regex.Pattern.compile("\"timestamp\"\\s*:\\s*\\[([^]]*)\\]").matcher(body);if(!m.find())return Long.MAX_VALUE;String[] a=m.group(1).split(",");for(int i=a.length-1;i>=0;i--){String v=a[i].trim();if(v.isBlank()||v.equals("null"))continue;long sec=Long.parseLong(v);return Math.max(0,(System.currentTimeMillis()-sec*1000L)/60000L);} }catch(Exception ignored){}return Long.MAX_VALUE;
   }
   static boolean usableYahooBody(String body){return body!=null&&!body.contains("\"result\":null")&&body.contains("\"timestamp\"")&&yahooBodyAgeMinutes(body)<Long.MAX_VALUE;}
-  static String yahooChartRequest(String sym,String host,boolean bust)throws Exception{
+  static String yahooChartRequest(String sym,String host,boolean bust,String caller)throws Exception{
     // V5P.2.8.2: cache by provider/symbol. Recovery requests are cached too, so concurrent UI consumers
     // cannot fan out into duplicate Yahoo downloads. TTL stays short while markets are active.
     String key="YAHOO|"+host+"|"+sym.toUpperCase(Locale.ROOT)+"|"+(bust?"RECOVERY":"PRIMARY");
@@ -1540,6 +1546,10 @@ public class MarketLedger {
       String u="https://"+host+"/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=5d&interval=5m&includePrePost=true&events=div%2Csplits"+(bust?"&_mlcb="+System.currentTimeMillis():"");
       HttpClient client=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();
       YAHOO_NETWORK_REQUESTS.incrementAndGet();
+      if("PRIMARY".equals(caller))YAHOO_PRIMARY_REQUESTS.incrementAndGet();
+      else if("RECOVERY".equals(caller))YAHOO_RECOVERY_REQUESTS.incrementAndGet();
+      else if("OUTCOME".equals(caller))YAHOO_OUTCOME_REQUESTS.incrementAndGet();
+      else YAHOO_OTHER_REQUESTS.incrementAndGet();
       HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.8.2").header("Accept","application/json").GET().build(),HttpResponse.BodyHandlers.ofString());
       if(r.statusCode()!=200||!usableYahooBody(r.body()))throw new Exception(host+" HTTP "+r.statusCode()+" / unusable candle payload");
       cacheProvider(key,r.body());return r.body();
@@ -1572,6 +1582,7 @@ public class MarketLedger {
               .build();
 
           YAHOO_NETWORK_REQUESTS.incrementAndGet();
+          YAHOO_EXTENDED_VOLUME_REQUESTS.incrementAndGet();
 
           HttpResponse<String> r=client.send(
               HttpRequest.newBuilder(URI.create(u))
@@ -1603,11 +1614,11 @@ public class MarketLedger {
   static void marketData(HttpExchange x,String raw)throws Exception{
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]",""); if(sym.isBlank()) throw new Exception("Invalid ticker");
     String best=null,bestSource="NONE";long bestAge=Long.MAX_VALUE;boolean recovery=false;StringBuilder diag=new StringBuilder();
-    try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false);long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR");}
+    try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false,"PRIMARY");long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR");}
     // Any candle older than 45m is stale enough to warrant an independent symbol recovery.
     if(bestAge>45){
       recovery=true;
-      try{String b=yahooChartRequest(sym,"query2.finance.yahoo.com",true);long a=yahooBodyAgeMinutes(b);diag.append(", yahooSingle=").append(a).append("m");if(a<bestAge){best=b;bestAge=a;bestSource="YAHOO_SINGLE";}}catch(Exception e){diag.append(", yahooSingle=ERR");}
+      try{String b=yahooChartRequest(sym,"query2.finance.yahoo.com",true,"RECOVERY");long a=yahooBodyAgeMinutes(b);diag.append(", yahooSingle=").append(a).append("m");if(a<bestAge){best=b;bestAge=a;bestSource="YAHOO_SINGLE";}}catch(Exception e){diag.append(", yahooSingle=ERR");}
       try{String b=alpacaYahooFallback(sym);long a=yahooBodyAgeMinutes(b);diag.append(", alpaca=").append(a).append("m");if(a<bestAge){best=b;bestAge=a;bestSource="ALPACA_IEX_FALLBACK";}}catch(Exception e){diag.append(", alpaca=ERR");}
     }
     if(best==null)throw new Exception("No candle data from Yahoo or Alpaca fallback for "+sym+" ("+diag+")");
@@ -1622,7 +1633,7 @@ public class MarketLedger {
 
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
-    json(x,200,"{\"version\":\"V5P.2.8.2.2\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
+    json(x,200,"{\"version\":\"V5P.2.8.2.3\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"yahooPrimaryRequests\":"+YAHOO_PRIMARY_REQUESTS.get()+",\"yahooRecoveryRequests\":"+YAHOO_RECOVERY_REQUESTS.get()+",\"yahooExtendedVolumeRequests\":"+YAHOO_EXTENDED_VOLUME_REQUESTS.get()+",\"yahooOutcomeRequests\":"+YAHOO_OUTCOME_REQUESTS.get()+",\"yahooOtherRequests\":"+YAHOO_OTHER_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
   }
 
   static String lanIp(){
