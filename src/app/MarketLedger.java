@@ -63,6 +63,25 @@ public class MarketLedger {
   static final java.util.concurrent.atomic.AtomicLong EXTVOL_BENCHMARK_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong EXTVOL_DISCOVERY_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong EXTVOL_OTHER_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+
+  // V5P.2.8.2.7: recovery decision diagnostics only; does not change recovery behavior.
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_EVALUATIONS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_TRIGGERED=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_AGE_45_TO_60=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_AGE_60_TO_180=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_AGE_OVER_180=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_YAHOO_IMPROVED=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_YAHOO_NOT_IMPROVED=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_ALPACA_IMPROVED=new java.util.concurrent.atomic.AtomicLong();
+
+  // V5P.2.8.2.7: browser analysis-cycle timing diagnostics only; no scheduling behavior change.
+  static final java.util.concurrent.atomic.AtomicLong ANALYSIS_CYCLES=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong ANALYSIS_LAST_DURATION_MS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong ANALYSIS_MAX_DURATION_MS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong ANALYSIS_LAST_START_EPOCH_MS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong ANALYSIS_LAST_END_EPOCH_MS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong ANALYSIS_LAST_START_INTERVAL_MS=new java.util.concurrent.atomic.AtomicLong();
+
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_RAW_BYTES=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_WIRE_BYTES=new java.util.concurrent.atomic.AtomicLong();
   // V5P.2.8.2.2: provider refresh budget guard.
@@ -962,6 +981,7 @@ public class MarketLedger {
       if(p.equals("/api/quotes/refresh") && m.equals("POST")) { refreshQuotes(x); return; }
       if(p.startsWith("/api/market/") && m.equals("GET")) { marketData(x,p.substring("/api/market/".length())); return; }
       if(p.equals("/api/info") && m.equals("GET")) { boolean cloud=System.getenv("RENDER")!=null; json(x,200,"{\"port\":"+PORT+",\"lanIp\":"+q(lanIp())+",\"cloud\":"+cloud+"}"); return; }
+      if(p.equals("/api/telemetry/analysis-cycle") && m.equals("POST")) { analysisCycleTelemetry(x); return; }
       if(p.equals("/api/bandwidth/status") && m.equals("GET")) { bandwidthStatus(x); return; }
       if(p.equals("/api/export") && m.equals("GET")) { exportCsv(x); return; }
       if(p.equals("/api/backup") && m.equals("GET")) { downloadBackup(x); return; }
@@ -1664,10 +1684,38 @@ public class MarketLedger {
     String best=null,bestSource="NONE";long bestAge=Long.MAX_VALUE;boolean recovery=false;StringBuilder diag=new StringBuilder();
     try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false,"PRIMARY");long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR");}
     // Any candle older than 45m is stale enough to warrant an independent symbol recovery.
+    // V5P.2.8.2.7: observe why recovery fires and whether either fallback improves freshness.
+    MARKET_RECOVERY_EVALUATIONS.incrementAndGet();
     if(bestAge>45){
+      MARKET_RECOVERY_TRIGGERED.incrementAndGet();
+      if(bestAge<=60) MARKET_RECOVERY_AGE_45_TO_60.incrementAndGet();
+      else if(bestAge<=180) MARKET_RECOVERY_AGE_60_TO_180.incrementAndGet();
+      else MARKET_RECOVERY_AGE_OVER_180.incrementAndGet();
+
       recovery=true;
-      try{String b=yahooChartRequest(sym,"query2.finance.yahoo.com",true,"RECOVERY");long a=yahooBodyAgeMinutes(b);diag.append(", yahooSingle=").append(a).append("m");if(a<bestAge){best=b;bestAge=a;bestSource="YAHOO_SINGLE";}}catch(Exception e){diag.append(", yahooSingle=ERR");}
-      try{String b=alpacaYahooFallback(sym);long a=yahooBodyAgeMinutes(b);diag.append(", alpaca=").append(a).append("m");if(a<bestAge){best=b;bestAge=a;bestSource="ALPACA_IEX_FALLBACK";}}catch(Exception e){diag.append(", alpaca=ERR");}
+      long primaryAge=bestAge;
+
+      try{
+        String b=yahooChartRequest(sym,"query2.finance.yahoo.com",true,"RECOVERY");
+        long a=yahooBodyAgeMinutes(b);
+        diag.append(", yahooSingle=").append(a).append("m");
+        if(a<primaryAge) MARKET_RECOVERY_YAHOO_IMPROVED.incrementAndGet();
+        else MARKET_RECOVERY_YAHOO_NOT_IMPROVED.incrementAndGet();
+        if(a<bestAge){best=b;bestAge=a;bestSource="YAHOO_SINGLE";}
+      }catch(Exception e){
+        MARKET_RECOVERY_YAHOO_NOT_IMPROVED.incrementAndGet();
+        diag.append(", yahooSingle=ERR");
+      }
+
+      try{
+        String b=alpacaYahooFallback(sym);
+        long a=yahooBodyAgeMinutes(b);
+        diag.append(", alpaca=").append(a).append("m");
+        if(a<bestAge){
+          MARKET_RECOVERY_ALPACA_IMPROVED.incrementAndGet();
+          best=b;bestAge=a;bestSource="ALPACA_IEX_FALLBACK";
+        }
+      }catch(Exception e){diag.append(", alpaca=ERR");}
     }
     if(best==null)throw new Exception("No candle data from Yahoo or Alpaca fallback for "+sym+" ("+diag+")");
     String state=bestAge<=15?"CURRENT":bestAge<=45?"AGING":bestAge<=60?"STALE":"EXPIRED";
@@ -1679,10 +1727,28 @@ public class MarketLedger {
     bytes(x,200,"application/json; charset=utf-8",best.getBytes(StandardCharsets.UTF_8));
   }
 
+  static void analysisCycleTelemetry(HttpExchange x)throws Exception{
+    Map<String,String> qv=query(x.getRequestURI().getRawQuery());
+    long start=Math.max(0,(long)num0(qv.getOrDefault("start","0")));
+    long end=Math.max(0,(long)num0(qv.getOrDefault("end","0")));
+    long duration=end>=start?end-start:Long.MAX_VALUE;
+    long interval=Math.max(0,(long)num0(qv.getOrDefault("interval","0")));
+    if(start<=0 || end<start || duration>24*60*60_000L || interval>24*60*60_000L){
+      json(x,400,"{\"error\":\"Invalid analysis-cycle telemetry\"}");return;
+    }
+    ANALYSIS_CYCLES.incrementAndGet();
+    ANALYSIS_LAST_START_EPOCH_MS.set(start);
+    ANALYSIS_LAST_END_EPOCH_MS.set(end);
+    ANALYSIS_LAST_DURATION_MS.set(duration);
+    ANALYSIS_MAX_DURATION_MS.accumulateAndGet(duration,Math::max);
+    ANALYSIS_LAST_START_INTERVAL_MS.set(interval);
+    json(x,200,"{\"ok\":true}");
+  }
+
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
     json(x,200,
-        "{\"version\":\"V5P.2.8.2.6\""
+        "{\"version\":\"V5P.2.8.2.7\""
         +",\"providerCacheEntries\":"+PROVIDER_CACHE.size()
         +",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()
         +",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()
@@ -1700,6 +1766,20 @@ public class MarketLedger {
         +",\"extendedVolumeBenchmarkRequests\":"+EXTVOL_BENCHMARK_REQUESTS.get()
         +",\"extendedVolumeDiscoveryRequests\":"+EXTVOL_DISCOVERY_REQUESTS.get()
         +",\"extendedVolumeOtherRequests\":"+EXTVOL_OTHER_REQUESTS.get()
+        +",\"marketRecoveryEvaluations\":"+MARKET_RECOVERY_EVALUATIONS.get()
+        +",\"marketRecoveryTriggered\":"+MARKET_RECOVERY_TRIGGERED.get()
+        +",\"marketRecoveryAge45To60\":"+MARKET_RECOVERY_AGE_45_TO_60.get()
+        +",\"marketRecoveryAge60To180\":"+MARKET_RECOVERY_AGE_60_TO_180.get()
+        +",\"marketRecoveryAgeOver180\":"+MARKET_RECOVERY_AGE_OVER_180.get()
+        +",\"marketRecoveryYahooImproved\":"+MARKET_RECOVERY_YAHOO_IMPROVED.get()
+        +",\"marketRecoveryYahooNotImproved\":"+MARKET_RECOVERY_YAHOO_NOT_IMPROVED.get()
+        +",\"marketRecoveryAlpacaImproved\":"+MARKET_RECOVERY_ALPACA_IMPROVED.get()
+        +",\"analysisCycles\":"+ANALYSIS_CYCLES.get()
+        +",\"analysisLastDurationMs\":"+ANALYSIS_LAST_DURATION_MS.get()
+        +",\"analysisMaxDurationMs\":"+ANALYSIS_MAX_DURATION_MS.get()
+        +",\"analysisLastStartEpochMs\":"+ANALYSIS_LAST_START_EPOCH_MS.get()
+        +",\"analysisLastEndEpochMs\":"+ANALYSIS_LAST_END_EPOCH_MS.get()
+        +",\"analysisLastStartIntervalMs\":"+ANALYSIS_LAST_START_INTERVAL_MS.get()
         +",\"responseRawBytes\":"+raw
         +",\"responseWireBytes\":"+wire
         +",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)
