@@ -50,7 +50,15 @@ public class MarketLedger {
   static final java.util.concurrent.atomic.AtomicLong YAHOO_NETWORK_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_RAW_BYTES=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_WIRE_BYTES=new java.util.concurrent.atomic.AtomicLong();
-  static long providerTtlMs(){String ph=marketPhaseServer();return ph.equals("CLOSED")?15*60_000L:ph.equals("OVERNIGHT")?120_000L:60_000L;}
+  // V5P.2.8.2.2: provider refresh budget guard.
+  // Keep primary Yahoo responses beyond the browser's 120s analysis cycle.
+  // Candle timestamps remain authoritative; caching never changes data freshness.
+  static long providerTtlMs(){
+    String ph=marketPhaseServer();
+    if(ph.equals("CLOSED")) return 15*60_000L;
+    if(ph.equals("OVERNIGHT")) return 180_000L;
+    return 180_000L;
+  }
   // V5P.2.8.2.1: provider-reported 1m extended-volume is freshness-sensitive.
   // Cache for one analysis cycle during PRE/POST/OVERNIGHT and longer when inactive.
   static long extendedVolumeTtlMs(){
@@ -1537,7 +1545,7 @@ public class MarketLedger {
       cacheProvider(key,r.body());return r.body();
     }
   }
-  // V5P.2.8.2.1: dedicated provider-reported Yahoo 1m extended-hours volume.
+  // V5P.2.8.2.2: dedicated provider-reported Yahoo 1m extended-hours volume.
   // Shared cache + per-symbol single-flight prevent concurrent/repeated UI consumers
   // from multiplying Yahoo downloads. No synthetic volume and no OHLC replacement.
   static void extendedVolumeBars(HttpExchange x,String raw)throws Exception{
@@ -1614,7 +1622,7 @@ public class MarketLedger {
 
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
-    json(x,200,"{\"version\":\"V5P.2.8.2.1\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
+    json(x,200,"{\"version\":\"V5P.2.8.2.2\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
   }
 
   static String lanIp(){
