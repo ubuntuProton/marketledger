@@ -75,11 +75,11 @@ public class MarketLedger {
     return 180_000L;
   }
   // V5P.2.8.2.1: provider-reported 1m extended-volume is freshness-sensitive.
-  // Cache for one analysis cycle during PRE/POST/OVERNIGHT and longer when inactive.
+  // Cache for 180 seconds during PRE/POST/OVERNIGHT and longer when inactive.
   static long extendedVolumeTtlMs(){
     String ph=marketPhaseServer();
     return (ph.equals("OVERNIGHT")||ph.equals("PRE")||ph.equals("POST"))
-        ? 120_000L
+        ? 180_000L
         : 15*60_000L;
   }
   static String cachedProvider(String key,long ttlMs){CachedText c=PROVIDER_CACHE.get(key);if(c!=null&&System.currentTimeMillis()-c.storedAt()<=ttlMs){PROVIDER_CACHE_HITS.incrementAndGet();return c.body();}if(c!=null)PROVIDER_CACHE.remove(key,c);PROVIDER_CACHE_MISSES.incrementAndGet();return null;}
@@ -1682,7 +1682,7 @@ public class MarketLedger {
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
     json(x,200,
-        "{\"version\":\"V5P.2.8.2.5\""
+        "{\"version\":\"V5P.2.8.2.6\""
         +",\"providerCacheEntries\":"+PROVIDER_CACHE.size()
         +",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()
         +",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()
