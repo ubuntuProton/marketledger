@@ -51,6 +51,14 @@ public class MarketLedger {
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_RAW_BYTES=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_WIRE_BYTES=new java.util.concurrent.atomic.AtomicLong();
   static long providerTtlMs(){String ph=marketPhaseServer();return ph.equals("CLOSED")?15*60_000L:ph.equals("OVERNIGHT")?120_000L:60_000L;}
+  // V5P.2.8.2.1: provider-reported 1m extended-volume is freshness-sensitive.
+  // Cache for one analysis cycle during PRE/POST/OVERNIGHT and longer when inactive.
+  static long extendedVolumeTtlMs(){
+    String ph=marketPhaseServer();
+    return (ph.equals("OVERNIGHT")||ph.equals("PRE")||ph.equals("POST"))
+        ? 120_000L
+        : 15*60_000L;
+  }
   static String cachedProvider(String key,long ttlMs){CachedText c=PROVIDER_CACHE.get(key);if(c!=null&&System.currentTimeMillis()-c.storedAt()<=ttlMs){PROVIDER_CACHE_HITS.incrementAndGet();return c.body();}if(c!=null)PROVIDER_CACHE.remove(key,c);PROVIDER_CACHE_MISSES.incrementAndGet();return null;}
   static void cacheProvider(String key,String body){if(body!=null&&!body.isBlank())PROVIDER_CACHE.put(key,new CachedText(body,System.currentTimeMillis()));}
   static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
@@ -1529,17 +1537,59 @@ public class MarketLedger {
       cacheProvider(key,r.body());return r.body();
     }
   }
-  // V5P.2.8.1: dedicated 1-minute Yahoo extended-hours payload used only to enrich
-  // existing 5-minute candles with provider-reported volume. It never invents volume,
-  // never replaces OHLC technical candles, and failure leaves V5P.2.8 STRUCTURE_ONLY intact.
+  // V5P.2.8.2.1: dedicated provider-reported Yahoo 1m extended-hours volume.
+  // Shared cache + per-symbol single-flight prevent concurrent/repeated UI consumers
+  // from multiplying Yahoo downloads. No synthetic volume and no OHLC replacement.
   static void extendedVolumeBars(HttpExchange x,String raw)throws Exception{
-    String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
-    String u="https://query1.finance.yahoo.com/v8/finance/chart/"+URLEncoder.encode(sym,StandardCharsets.UTF_8)+"?range=1d&interval=1m&includePrePost=true&events=div%2Csplits&_mlv="+System.currentTimeMillis();
-    HttpClient client=HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(6)).build();
-    HttpResponse<String> r=client.send(HttpRequest.newBuilder(URI.create(u)).timeout(java.time.Duration.ofSeconds(10)).header("User-Agent","Mozilla/5.0 MarketLedger/2.8.1").header("Accept","application/json").header("Cache-Control","no-cache").GET().build(),HttpResponse.BodyHandlers.ofString());
-    if(r.statusCode()!=200||r.body()==null||r.body().contains("\"result\":null"))throw new Exception("Yahoo extended-volume HTTP "+r.statusCode());
+    String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]","");
+    if(sym.isBlank())throw new Exception("Invalid ticker");
+
+    String key="YAHOO_EXTVOL|"+sym;
+    long ttl=extendedVolumeTtlMs();
+    String body=cachedProvider(key,ttl);
+    boolean cacheHit=body!=null;
+
+    if(body==null){
+      synchronized(("ML-YAHOO-"+key).intern()){
+        body=cachedProvider(key,ttl);
+        cacheHit=body!=null;
+
+        if(body==null){
+          String u="https://query1.finance.yahoo.com/v8/finance/chart/"
+              +URLEncoder.encode(sym,StandardCharsets.UTF_8)
+              +"?range=1d&interval=1m&includePrePost=true&events=div%2Csplits";
+
+          HttpClient client=HttpClient.newBuilder()
+              .connectTimeout(java.time.Duration.ofSeconds(6))
+              .build();
+
+          YAHOO_NETWORK_REQUESTS.incrementAndGet();
+
+          HttpResponse<String> r=client.send(
+              HttpRequest.newBuilder(URI.create(u))
+                  .timeout(java.time.Duration.ofSeconds(10))
+                  .header("User-Agent","Mozilla/5.0 MarketLedger/2.8.2.1")
+                  .header("Accept","application/json")
+                  .GET()
+                  .build(),
+              HttpResponse.BodyHandlers.ofString());
+
+          if(r.statusCode()!=200
+              ||r.body()==null
+              ||r.body().contains("\"result\":null"))
+            throw new Exception("Yahoo extended-volume HTTP "+r.statusCode());
+
+          body=r.body();
+          cacheProvider(key,body);
+        }
+      }
+    }
+
     x.getResponseHeaders().set("X-MarketLedger-Volume-Source","YAHOO_1M_EXTENDED");
-    bytes(x,200,"application/json; charset=utf-8",r.body().getBytes(StandardCharsets.UTF_8));
+    x.getResponseHeaders().set("X-MarketLedger-Volume-Cache",cacheHit?"HIT":"MISS");
+
+    bytes(x,200,"application/json; charset=utf-8",
+        body.getBytes(StandardCharsets.UTF_8));
   }
 
   static void marketData(HttpExchange x,String raw)throws Exception{
@@ -1564,7 +1614,7 @@ public class MarketLedger {
 
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
-    json(x,200,"{\"version\":\"V5P.2.8.2\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
+    json(x,200,"{\"version\":\"V5P.2.8.2.1\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
   }
 
   static String lanIp(){
