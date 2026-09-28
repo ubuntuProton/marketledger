@@ -54,6 +54,15 @@ public class MarketLedger {
   static final java.util.concurrent.atomic.AtomicLong YAHOO_OUTCOME_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong YAHOO_EXTENDED_VOLUME_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong YAHOO_OTHER_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  // V5P.2.8.2.5: logical frontend workload attribution.
+  static final java.util.concurrent.atomic.AtomicLong MARKET_WATCHLIST_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_BENCHMARK_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_DISCOVERY_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong MARKET_OTHER_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong EXTVOL_WATCHLIST_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong EXTVOL_BENCHMARK_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong EXTVOL_DISCOVERY_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+  static final java.util.concurrent.atomic.AtomicLong EXTVOL_OTHER_REQUESTS=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_RAW_BYTES=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong RESPONSE_WIRE_BYTES=new java.util.concurrent.atomic.AtomicLong();
   // V5P.2.8.2.2: provider refresh budget guard.
@@ -1558,7 +1567,45 @@ public class MarketLedger {
   // V5P.2.8.2.2: dedicated provider-reported Yahoo 1m extended-hours volume.
   // Shared cache + per-symbol single-flight prevent concurrent/repeated UI consumers
   // from multiplying Yahoo downloads. No synthetic volume and no OHLC replacement.
+  // V5P.2.8.2.5: telemetry-only workload parser.
+  static String requestWorkload(HttpExchange x){
+    try{
+      String query=x.getRequestURI().getRawQuery();
+      if(query!=null){
+        for(String part:query.split("&")){
+          int eq=part.indexOf('=');
+          String key=eq>=0?part.substring(0,eq):part;
+          key=java.net.URLDecoder.decode(key,StandardCharsets.UTF_8);
+          if("workload".equalsIgnoreCase(key)){
+            String value=eq>=0
+                ?java.net.URLDecoder.decode(part.substring(eq+1),StandardCharsets.UTF_8)
+                :"";
+            value=value.toUpperCase(Locale.ROOT);
+            if("WATCHLIST".equals(value)||"BENCHMARK".equals(value)||"DISCOVERY".equals(value))
+              return value;
+          }
+        }
+      }
+    }catch(Exception ignored){}
+    return "OTHER";
+  }
+
+  static void countMarketWorkload(String w){
+    if("WATCHLIST".equals(w))MARKET_WATCHLIST_REQUESTS.incrementAndGet();
+    else if("BENCHMARK".equals(w))MARKET_BENCHMARK_REQUESTS.incrementAndGet();
+    else if("DISCOVERY".equals(w))MARKET_DISCOVERY_REQUESTS.incrementAndGet();
+    else MARKET_OTHER_REQUESTS.incrementAndGet();
+  }
+
+  static void countExtendedVolumeWorkload(String w){
+    if("WATCHLIST".equals(w))EXTVOL_WATCHLIST_REQUESTS.incrementAndGet();
+    else if("BENCHMARK".equals(w))EXTVOL_BENCHMARK_REQUESTS.incrementAndGet();
+    else if("DISCOVERY".equals(w))EXTVOL_DISCOVERY_REQUESTS.incrementAndGet();
+    else EXTVOL_OTHER_REQUESTS.incrementAndGet();
+  }
+
   static void extendedVolumeBars(HttpExchange x,String raw)throws Exception{
+    countExtendedVolumeWorkload(requestWorkload(x));
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]","");
     if(sym.isBlank())throw new Exception("Invalid ticker");
 
@@ -1612,6 +1659,7 @@ public class MarketLedger {
   }
 
   static void marketData(HttpExchange x,String raw)throws Exception{
+    countMarketWorkload(requestWorkload(x));
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]",""); if(sym.isBlank()) throw new Exception("Invalid ticker");
     String best=null,bestSource="NONE";long bestAge=Long.MAX_VALUE;boolean recovery=false;StringBuilder diag=new StringBuilder();
     try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false,"PRIMARY");long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR");}
@@ -1633,7 +1681,29 @@ public class MarketLedger {
 
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
-    json(x,200,"{\"version\":\"V5P.2.8.2.3\",\"providerCacheEntries\":"+PROVIDER_CACHE.size()+",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()+",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()+",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()+",\"yahooPrimaryRequests\":"+YAHOO_PRIMARY_REQUESTS.get()+",\"yahooRecoveryRequests\":"+YAHOO_RECOVERY_REQUESTS.get()+",\"yahooExtendedVolumeRequests\":"+YAHOO_EXTENDED_VOLUME_REQUESTS.get()+",\"yahooOutcomeRequests\":"+YAHOO_OUTCOME_REQUESTS.get()+",\"yahooOtherRequests\":"+YAHOO_OTHER_REQUESTS.get()+",\"responseRawBytes\":"+raw+",\"responseWireBytes\":"+wire+",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)+"}");
+    json(x,200,
+        "{\"version\":\"V5P.2.8.2.5\""
+        +",\"providerCacheEntries\":"+PROVIDER_CACHE.size()
+        +",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()
+        +",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()
+        +",\"yahooNetworkRequests\":"+YAHOO_NETWORK_REQUESTS.get()
+        +",\"yahooPrimaryRequests\":"+YAHOO_PRIMARY_REQUESTS.get()
+        +",\"yahooRecoveryRequests\":"+YAHOO_RECOVERY_REQUESTS.get()
+        +",\"yahooExtendedVolumeRequests\":"+YAHOO_EXTENDED_VOLUME_REQUESTS.get()
+        +",\"yahooOutcomeRequests\":"+YAHOO_OUTCOME_REQUESTS.get()
+        +",\"yahooOtherRequests\":"+YAHOO_OTHER_REQUESTS.get()
+        +",\"marketWatchlistRequests\":"+MARKET_WATCHLIST_REQUESTS.get()
+        +",\"marketBenchmarkRequests\":"+MARKET_BENCHMARK_REQUESTS.get()
+        +",\"marketDiscoveryRequests\":"+MARKET_DISCOVERY_REQUESTS.get()
+        +",\"marketOtherRequests\":"+MARKET_OTHER_REQUESTS.get()
+        +",\"extendedVolumeWatchlistRequests\":"+EXTVOL_WATCHLIST_REQUESTS.get()
+        +",\"extendedVolumeBenchmarkRequests\":"+EXTVOL_BENCHMARK_REQUESTS.get()
+        +",\"extendedVolumeDiscoveryRequests\":"+EXTVOL_DISCOVERY_REQUESTS.get()
+        +",\"extendedVolumeOtherRequests\":"+EXTVOL_OTHER_REQUESTS.get()
+        +",\"responseRawBytes\":"+raw
+        +",\"responseWireBytes\":"+wire
+        +",\"responseSavingsPct\":"+(raw>0?Math.round((1.0-wire/(double)raw)*1000.0)/10.0:0)
+        +"}");
   }
 
   static String lanIp(){
