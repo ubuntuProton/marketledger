@@ -1650,6 +1650,35 @@ public class MarketLedger {
   static String jsonStr(String body,String key){var m=java.util.regex.Pattern.compile("\\\""+key+"\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(body);return m.find()?m.group(1):"";}
   static double dnum(String s){try{return s==null||s.equals("null")?Double.NaN:Double.parseDouble(s);}catch(Exception e){return Double.NaN;}}
   static String feedForPhase(String phase){return phase.equals("OVERNIGHT")?"overnight":"iex";}
+  // V5P.2.8.2.11: bounded Alpaca error diagnostics.
+  // Never log credentials or full provider response bodies.
+  static String alpacaErrorCode(String body){
+    if(body==null||body.isBlank())return "";
+    String code=jsonStr(body,"code");
+    if(!code.isBlank())return code;
+    String numeric=jsonNum(body,"code");
+    return "null".equals(numeric)?"":numeric;
+  }
+
+  static String alpacaErrorMessage(String body){
+    if(body==null||body.isBlank())return "";
+    String msg=jsonStr(body,"message");
+    if(msg.isBlank())msg=jsonStr(body,"error");
+    if(msg.isBlank())return "";
+    msg=msg.replaceAll("[\\r\\n\\t]+"," ").replaceAll("\\s+"," ").trim();
+    return msg.length()>240?msg.substring(0,240):msg;
+  }
+
+  static String alpacaFailureDiag(HttpResponse<String> r){
+    if(r==null)return "http=NONE";
+    String body=r.body()==null?"":r.body();
+    String code=alpacaErrorCode(body);
+    String msg=alpacaErrorMessage(body);
+    return "http="+r.statusCode()
+        +" code="+(code.isBlank()?"NONE":code)
+        +" message="+(msg.isBlank()?"NONE":msg);
+  }
+
   static void microstructure(HttpExchange x,String raw)throws Exception{
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.-]","");if(sym.isBlank())throw new Exception("Invalid ticker");
     Properties p=marketSettings();String provider=p.getProperty("provider","YAHOO");if(!provider.equals("ALPACA")){json(x,200,"{\"provider\":\"YAHOO\",\"available\":false,\"reason\":\"Configure Alpaca for bid/ask and overnight liquidity\"}");return;}
@@ -1663,6 +1692,15 @@ public class MarketLedger {
       throw e;
     }
     if(qr.statusCode()!=200&&br.statusCode()!=200){
+      System.out.println(
+        "V5P.2.8.2.11 overnight authority diag: "
+        +sym
+        +" phase="+phase
+        +" feed="+feed
+        +" quoteLatest={"+alpacaFailureDiag(qr)+"}"
+        +" barLatest={"+alpacaFailureDiag(br)+"}"
+        +" result=NO_DATA"
+      );
       System.out.println("Market data diag: "+sym+" phase="+phase+" feed="+feed+" quoteHTTP="+qr.statusCode()+" barHTTP="+br.statusCode()+" result=NO_DATA");
       json(x,200,"{\"provider\":\"ALPACA\",\"available\":false,\"feed\":"+q(feed)+",\"http\":"+Math.max(qr.statusCode(),br.statusCode())+",\"reason\":\"No latest quote/bar from selected feed\"}");return;
     }
@@ -1724,7 +1762,19 @@ public class MarketLedger {
     String enc=URLEncoder.encode(sym,StandardCharsets.UTF_8);
     // V5P.2.7.1: BOATS history is entitlement-blocked (403) on this deployment. Do not probe it per symbol.
     // Alpaca feed=overnight latest is retained as one genuine external bar; no missing history is synthesized.
-    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","overnight");String lb=latest.statusCode()==200?latest.body():"";
+    HttpResponse<String> latest=alpacaGet("https://data.alpaca.markets/v2/stocks/"+enc+"/bars/latest","overnight");
+    System.out.println(
+      "V5P.2.8.2.11 overnight latest diag: "
+      +sym
+      +" phase="+marketPhaseServer()
+      +" feed=overnight"
+      +" endpoint=BAR_LATEST"
+      +" "+alpacaFailureDiag(latest)
+      +(latest.statusCode()==200
+        ?" ts="+(jsonStr(latest.body(),"t").isBlank()?"NONE":jsonStr(latest.body(),"t"))
+        :"")
+    );
+    String lb=latest.statusCode()==200?latest.body():"";
     String combined="";
     if(!lb.isBlank()&&lb.contains("\"bar\"")){var bm=java.util.regex.Pattern.compile("\"bar\"\\s*:\\s*(\\{[^}]+\\})").matcher(lb);if(bm.find())combined=bm.group(1);}
     try{String out=alpacaBarsAsYahoo(sym,combined,"ALPACA_OVERNIGHT_LATEST","REALTIME_LATEST_ONLY");bytes(x,200,"application/json; charset=utf-8",out.getBytes(StandardCharsets.UTF_8));}
@@ -1985,7 +2035,7 @@ public class MarketLedger {
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
     json(x,200,
-        "{\"version\":\"V5P.2.8.2.10.1\""
+        "{\"version\":\"V5P.2.8.2.11\""
         +",\"providerCacheEntries\":"+PROVIDER_CACHE.size()
         +",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()
         +",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()
