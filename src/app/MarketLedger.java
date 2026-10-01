@@ -96,12 +96,14 @@ public class MarketLedger {
     return 180_000L;
   }
   // V5P.2.8.2.1: provider-reported 1m extended-volume is freshness-sensitive.
-  // Cache for 180 seconds during PRE/POST/OVERNIGHT and longer when inactive.
+  // Active-session cache is phase-aware; inactive sessions use the longer fallback TTL.
   static long extendedVolumeTtlMs(){
     String ph=marketPhaseServer();
-    return (ph.equals("OVERNIGHT")||ph.equals("PRE")||ph.equals("POST"))
-        ? 180_000L
-        : 15*60_000L;
+    // V5P.2.8.2.9: align OVERNIGHT extended-volume cache with observed analysis-cycle cadence.
+    // PRE/POST remain at 180s to preserve higher-frequency extended-hours volume freshness.
+    if(ph.equals("OVERNIGHT")) return 300_000L;
+    if(ph.equals("PRE")||ph.equals("POST")) return 180_000L;
+    return 15*60_000L;
   }
   static String cachedProvider(String key,long ttlMs){CachedText c=PROVIDER_CACHE.get(key);if(c!=null&&System.currentTimeMillis()-c.storedAt()<=ttlMs){PROVIDER_CACHE_HITS.incrementAndGet();return c.body();}if(c!=null)PROVIDER_CACHE.remove(key,c);PROVIDER_CACHE_MISSES.incrementAndGet();return null;}
   static void cacheProvider(String key,String body){if(body!=null&&!body.isBlank())PROVIDER_CACHE.put(key,new CachedText(body,System.currentTimeMillis()));}
@@ -1759,7 +1761,7 @@ public class MarketLedger {
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
     json(x,200,
-        "{\"version\":\"V5P.2.8.2.8\""
+        "{\"version\":\"V5P.2.8.2.9\""
         +",\"providerCacheEntries\":"+PROVIDER_CACHE.size()
         +",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()
         +",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()
