@@ -372,6 +372,18 @@ public class MarketLedger {
   static volatile ProviderDiag LAST_AV_IPO_DIAG=new ProviderDiag("Alpha Vantage",0,"","",0,0,0,"not synced");
   record CorporateSyncResult(EarningsSyncResult earnings,int ipoFound,int ipoChanged,int ipoFailed,List<String> ipoFailures) {}
 
+  // V5P.2.8.2.10: Schwab Week Ahead authority diagnostics.
+  record SchwabCandidate(String url,String title,LocalDate published) {}
+  record SchwabSyncResult(
+    boolean ok,int candidates,int found,int added,
+    String source,String title,LocalDate published,
+    String lastAttempt,String lastSuccess,String note) {}
+
+  static volatile SchwabSyncResult LAST_SCHWAB_SYNC=
+    new SchwabSyncResult(
+      false,0,0,0,"","",null,
+      "","","not synced");
+
   static void migrateEarningsMetadata(){
     try{
       synchronized(LOCK){
@@ -411,8 +423,19 @@ public class MarketLedger {
         System.out.println("Corporate calendar: earnings found="+r.earnings.found+" IPOs found="+r.ipoFound+
           " earnings failures="+r.earnings.failed+" IPO failures="+r.ipoFailed);
       }catch(Throwable e){System.err.println("Corporate calendar warning: "+e.getMessage());}
+
+      // V5P.2.8.2.10: independent Schwab Week Ahead authority refresh.
+      // A Schwab failure must not interrupt the corporate calendar worker.
+      try{
+        SchwabSyncResult s=syncSchwabCalendar();
+        System.out.println("Schwab Week Ahead: published="+s.published()+
+          " candidates="+s.candidates()+" found="+s.found()+" added="+s.added()+
+          " source="+s.source());
+      }catch(Throwable e){
+        System.err.println("Schwab Week Ahead warning: "+e.getMessage());
+      }
     },45,21600,TimeUnit.SECONDS);
-    System.out.println("Corporate calendar: scheduled every 6 hours");
+    System.out.println("Corporate calendar + Schwab Week Ahead: scheduled every 6 hours");
   }
 
   static String diagJson(ProviderDiag d){
@@ -967,6 +990,7 @@ public class MarketLedger {
       if(p.equals("/api/notes") && m.equals("POST")) { addNote(x); return; }
       if(p.equals("/api/events") && m.equals("POST")) { addEvent(x); return; }
       if(p.equals("/api/context/schwab/sync") && m.equals("POST")) { syncSchwab(x); return; }
+      if(p.equals("/api/context/schwab/diagnostics") && m.equals("GET")) { schwabDiagnosticsEndpoint(x); return; }
       if(p.equals("/api/news/catalysts") && m.equals("GET")) { newsCatalysts(x); return; }
       if(p.equals("/api/context/earnings/sync") && m.equals("POST")) { syncEarningsEndpoint(x); return; }
       if(p.equals("/api/context/corporate/sync") && m.equals("POST")) { syncCorporateEndpoint(x); return; }
@@ -1384,32 +1408,232 @@ public class MarketLedger {
   static int sourceScore(String source){String s=source.toLowerCase(Locale.ROOT);if(s.contains("reuters"))return 100;if(s.contains("schwab"))return 95;if(s.contains("sec")||s.contains("business wire")||s.contains("globe newswire"))return 90;if(s.contains("cnbc")||s.contains("bloomberg")||s.contains("associated press"))return 85;if(s.contains("barron"))return 82;if(s.contains("yahoo finance")||s.contains("marketwatch"))return 78;if(s.contains("thestreet")||s.contains("the street")||s.contains("benzinga"))return 74;return 60;}
   static String newsTheme(String s){if(s.matches(".*(investigation|lawsuit|settlement|recall|ban|approval|antitrust|export control).*"))return "Legal / Regulatory";if(s.matches(".*(earnings|revenue|guidance|profit|eps|sales).*"))return "Earnings / Guidance";if(s.matches(".*(acquisition|merger|partnership|contract|buyout|stake|investment).*"))return "Deals / Partnerships";if(s.matches(".*(ai|artificial intelligence|data center|datacenter|gpu|cpu|semiconductor|chip).*"))return "AI / Compute / Semiconductors";if(s.matches(".*(fed|rate|yield|inflation|cpi|jobs|payroll|treasury).*"))return "Rates / Macro";if(s.matches(".*(bitcoin|crypto|ethereum).*"))return "Crypto";return "Company / Market News";}
 
-  static void syncSchwab(HttpExchange x)throws Exception{
-    HttpClient client=HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(java.time.Duration.ofSeconds(8)).build();
+  // V5P.2.8.2.10: discover official Schwab Week Ahead candidates and make
+  // the newest validated dated publication authoritative. Never fall back to
+  // an older article merely because the newest article fails parsing.
+  static SchwabSyncResult syncSchwabCalendar()throws Exception{
+    String attempt=now();
+    SchwabSyncResult previous=LAST_SCHWAB_SYNC;
+    try{
+      HttpClient client=HttpClient.newBuilder()
+      .followRedirects(HttpClient.Redirect.NORMAL)
+      .connectTimeout(java.time.Duration.ofSeconds(8)).build();
+
     String hub="https://schwabnetwork.com/markets/us-economy";
-    HttpResponse<String> hr=client.send(HttpRequest.newBuilder(URI.create(hub)).timeout(java.time.Duration.ofSeconds(15)).header("User-Agent","Mozilla/5.0 MarketLedger/2.3").GET().build(),HttpResponse.BodyHandlers.ofString());
-    if(hr.statusCode()!=200) throw new Exception("Schwab Network returned HTTP "+hr.statusCode());
+    HttpResponse<String> hr=client.send(
+      HttpRequest.newBuilder(URI.create(hub))
+        .timeout(java.time.Duration.ofSeconds(15))
+        .header("User-Agent","Mozilla/5.0 MarketLedger/2.3")
+        .GET().build(),
+      HttpResponse.BodyHandlers.ofString());
+
+    if(hr.statusCode()!=200)
+      throw new Exception("Schwab Network returned HTTP "+hr.statusCode());
+
     String html=hr.body();
-    java.util.regex.Matcher lm=java.util.regex.Pattern.compile("href=[\\\"']([^\\\"']*week-ahead[^\\\"']*)[\\\"']",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html);
-    String link=null; if(lm.find()) link=lm.group(1); if(link==null) throw new Exception("Could not discover the latest Schwab Week Ahead article");
-    if(link.startsWith("/")) link="https://schwabnetwork.com"+link; else if(!link.startsWith("http")) link="https://schwabnetwork.com/"+link;
-    HttpResponse<String> ar=client.send(HttpRequest.newBuilder(URI.create(link)).timeout(java.time.Duration.ofSeconds(15)).header("User-Agent","Mozilla/5.0 MarketLedger/2.3").GET().build(),HttpResponse.BodyHandlers.ofString());
-    if(ar.statusCode()!=200) throw new Exception("Schwab article returned HTTP "+ar.statusCode());
-    String text=htmlText(ar.body());
-    var imported=parseSchwabCalendar(text);
+    var lm=java.util.regex.Pattern.compile(
+      "href=[\\\"']([^\\\"']*week-ahead[^\\\"']*)[\\\"']",
+      java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html);
+
+    LinkedHashSet<String> links=new LinkedHashSet<>();
+    while(lm.find()){
+      String link=lm.group(1).trim();
+      if(link.startsWith("/")) link="https://schwabnetwork.com"+link;
+      else if(!link.startsWith("http")) link="https://schwabnetwork.com/"+link;
+      if(link.startsWith("https://schwabnetwork.com/")) links.add(link);
+    }
+
+    if(links.isEmpty())
+      throw new Exception("Could not discover Schwab Week Ahead candidates");
+
+    // Keep network work bounded even if the hub unexpectedly contains a large archive.
+    var candidates=new ArrayList<SchwabCandidate>();
+    var bodies=new HashMap<String,String>();
+    int inspected=0;
+
+    for(String link:links){
+      if(inspected++>=8) break;
+      try{
+        HttpResponse<String> ar=client.send(
+          HttpRequest.newBuilder(URI.create(link))
+            .timeout(java.time.Duration.ofSeconds(15))
+            .header("User-Agent","Mozilla/5.0 MarketLedger/2.3")
+            .GET().build(),
+          HttpResponse.BodyHandlers.ofString());
+
+        if(ar.statusCode()!=200) continue;
+
+        String body=ar.body();
+        String text=htmlText(body);
+
+        LocalDate published=schwabPublishedDate(body,text);
+        String title=schwabArticleTitle(body,text);
+
+        // A candidate without a trustworthy publication date cannot outrank a
+        // dated official candidate.
+        if(published!=null){
+          candidates.add(new SchwabCandidate(link,title,published));
+          bodies.put(link,text);
+        }
+      }catch(Exception ignored){}
+    }
+
+    if(candidates.isEmpty())
+      throw new Exception("No dated Schwab Week Ahead candidate could be validated");
+
+    candidates.sort(
+      Comparator.comparing(SchwabCandidate::published).reversed()
+        .thenComparing(SchwabCandidate::url));
+
+    // V5P.2.8.2.10 authority guard:
+    // newest validated official publication is authoritative.
+    // Never silently fall back to an older Week Ahead when the newest
+    // publication changes format or fails parsing.
+    SchwabCandidate selected=candidates.get(0);
+    List<Event> imported=parseSchwabCalendar(
+      bodies.get(selected.url()),selected.published());
+
+    if(imported.isEmpty())
+      throw new Exception(
+        "Latest Schwab Week Ahead contained no parseable calendar events: "
+        +selected.published()+" "+selected.url());
+
+    int added=0;
     synchronized(LOCK){
-      var es=readEvents(); long id=es.stream().mapToLong(Event::id).max().orElse(0)+1; int added=0;
-      for(var e:imported){ boolean dup=es.stream().anyMatch(z->z.when.equals(e.when)&&z.title.equalsIgnoreCase(e.title)); if(!dup){es.add(new Event(id++,e.when,e.type,e.impact,e.scope,e.title+" [Schwab Week Ahead]",now()));added++;}}
-      es.sort(Comparator.comparing(Event::when)); writeEvents(es);
-      json(x,200,"{\"ok\":true,\"added\":"+added+",\"found\":"+imported.size()+",\"source\":"+q(link)+"}");
+      var es=readEvents();
+      long id=es.stream().mapToLong(Event::id).max().orElse(0)+1;
+
+      for(var e:imported){
+        boolean dup=es.stream().anyMatch(z->
+          z.when.equals(e.when)&&z.title.equalsIgnoreCase(e.title+" [Schwab Week Ahead]"));
+
+        if(!dup){
+          es.add(new Event(id++,e.when,e.type,e.impact,e.scope,
+            e.title+" [Schwab Week Ahead]",now()));
+          added++;
+        }
+      }
+
+      es.sort(Comparator.comparing(Event::when));
+      if(added>0) writeEvents(es);
+    }
+
+      String success=now();
+      SchwabSyncResult result=new SchwabSyncResult(
+        true,candidates.size(),imported.size(),added,
+        selected.url(),selected.title(),selected.published(),
+        attempt,success,"ok");
+
+      LAST_SCHWAB_SYNC=result;
+      return result;
+    }catch(Exception e){
+      String failure=e.getMessage()==null?"Schwab sync failed":e.getMessage();
+
+      // Preserve the last successful authority while exposing this failed attempt.
+      LAST_SCHWAB_SYNC=new SchwabSyncResult(
+        false,
+        previous.candidates(),previous.found(),0,
+        previous.source(),previous.title(),previous.published(),
+        attempt,previous.lastSuccess(),failure);
+
+      throw e;
     }
   }
-  static String htmlText(String h){return h.replaceAll("(?is)<script.*?</script>"," ").replaceAll("(?is)<style.*?</style>"," ").replaceAll("(?i)<br\\s*/?>","\\n").replaceAll("(?i)</(?:p|li|h[1-6]|div|tr)>","\\n").replaceAll("(?s)<[^>]+>"," ").replace("&nbsp;"," ").replace("&amp;","&").replace("&#39;","'").replace("&quot;","\\\"").replaceAll("[ \\t]+"," ");}
+
+  static void schwabDiagnosticsEndpoint(HttpExchange x)throws Exception{
+    SchwabSyncResult r=LAST_SCHWAB_SYNC;
+    json(x,200,
+      "{\"ok\":"+r.ok()+
+      ",\"candidates\":"+r.candidates()+
+      ",\"found\":"+r.found()+
+      ",\"added\":"+r.added()+
+      ",\"source\":"+q(r.source())+
+      ",\"title\":"+q(r.title())+
+      ",\"published\":"+q(r.published()==null?"":r.published().toString())+
+      ",\"lastAttempt\":"+q(r.lastAttempt())+
+      ",\"lastSuccess\":"+q(r.lastSuccess())+
+      ",\"note\":"+q(r.note())+"}");
+  }
+
+  static void syncSchwab(HttpExchange x)throws Exception{
+    try{
+      SchwabSyncResult r=syncSchwabCalendar();
+      json(x,200,
+        "{\"ok\":true,\"candidates\":"+r.candidates()+
+        ",\"found\":"+r.found()+
+        ",\"added\":"+r.added()+
+        ",\"source\":"+q(r.source())+
+        ",\"title\":"+q(r.title())+
+        ",\"published\":"+q(r.published()==null?"":r.published().toString())+
+        ",\"lastAttempt\":"+q(r.lastAttempt())+
+        ",\"lastSuccess\":"+q(r.lastSuccess())+
+        ",\"note\":"+q(r.note())+"}");
+    }catch(Exception e){
+      // syncSchwabCalendar() already recorded failure diagnostics.
+      throw e;
+    }
+  }
+
+  static String schwabArticleTitle(String html,String text){
+    var m=java.util.regex.Pattern.compile(
+      "(?is)<meta[^>]+property=[\\\"']og:title[\\\"'][^>]+content=[\\\"']([^\\\"']+)[\\\"']")
+      .matcher(html);
+    if(m.find()) return htmlText(m.group(1)).trim();
+
+    m=java.util.regex.Pattern.compile("(?is)<title[^>]*>(.*?)</title>").matcher(html);
+    if(m.find()) return htmlText(m.group(1)).trim();
+
+    for(String line:text.split("\\R")){
+      String v=line.trim();
+      if(v.toLowerCase(Locale.ROOT).contains("week ahead") && v.length()<180)
+        return v;
+    }
+    return "Schwab Week Ahead";
+  }
+
+  static LocalDate schwabPublishedDate(String html,String text){
+    // Prefer explicit article metadata over page ordering.
+    String[] patterns={
+      "(?is)(?:article:published_time|datePublished)[^>\\n]{0,160}?(20\\d{2})-(\\d{2})-(\\d{2})",
+      "(?is)(?:publish(?:ed)?|publication)[^>\\n]{0,120}?(20\\d{2})-(\\d{2})-(\\d{2})",
+      "(?i)(?:Published\\s+)?(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?\\s+\\d{1,2},\\s+20\\d{2}"
+    };
+
+    for(int i=0;i<patterns.length;i++){
+      var m=java.util.regex.Pattern.compile(patterns[i]).matcher(i<2?html:text);
+      if(!m.find()) continue;
+      try{
+        if(i<2)
+          return LocalDate.of(Integer.parseInt(m.group(1)),
+            Integer.parseInt(m.group(2)),Integer.parseInt(m.group(3)));
+
+        String d=m.group().replaceFirst("(?i)^Published\\s+","").trim();
+        for(String f:List.of("MMMM d, yyyy","MMM d, yyyy","MMM. d, yyyy")){
+          try{return LocalDate.parse(d,DateTimeFormatter.ofPattern(f,Locale.US));}
+          catch(Exception ignored){}
+        }
+      }catch(Exception ignored){}
+    }
+    return null;
+  }
+
+  static String htmlText(String h){return h.replaceAll("(?is)<script.*?</script>"," ").replaceAll("(?is)<style.*?</style>"," ").replaceAll("(?i)<br\\s*/?>","\n").replaceAll("(?i)</(?:p|li|strong|h[1-6]|div|tr)>","\n").replaceAll("(?s)<[^>]+>"," ").replace("&nbsp;"," ").replace("&amp;","&").replace("&#39;","'").replace("&quot;","\\\"").replaceAll("[ \\t]+"," ");}
   static List<Event> parseSchwabCalendar(String text){
-    var out=new ArrayList<Event>(); int year=Year.now(ZoneId.of("America/New_York")).getValue(); LocalDate active=null;
-    var datePat=java.util.regex.Pattern.compile("(?i)(Monday|Tuesday|Wednesday|Thursday|Friday)\\s+(\\d{1,2})/(\\d{1,2})");
+    return parseSchwabCalendar(text,LocalDate.now(ZoneId.of("America/New_York")));
+  }
+
+  static List<Event> parseSchwabCalendar(String text,LocalDate articleDate){
+    var out=new ArrayList<Event>(); LocalDate active=null;
+    var datePat=java.util.regex.Pattern.compile("(?i)(Monday|Tuesday|Wednesday|Thursday|Friday)\\s*,?\\s*(\\d{1,2})/(\\d{1,2})");
     var timePat=java.util.regex.Pattern.compile("(?i)(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\s*:?\\s*([^\\n]{3,120})");
-    for(String raw:text.split("\\R")){String line=raw.trim(); if(line.isBlank())continue; var dm=datePat.matcher(line); if(dm.find()){try{active=LocalDate.of(year,Integer.parseInt(dm.group(2)),Integer.parseInt(dm.group(3)));}catch(Exception ignored){} continue;} if(active==null)continue; var tm=timePat.matcher(line); while(tm.find()){int h=Integer.parseInt(tm.group(1)),mi=Integer.parseInt(tm.group(2));String ap=tm.group(3).toUpperCase(Locale.ROOT);if(h==12)h=0;if(ap.equals("PM"))h+=12;String title=tm.group(4).replaceAll("\\s+"," ").trim();String type=title.toLowerCase(Locale.ROOT).contains("fed")?"FED":title.toLowerCase(Locale.ROOT).contains("auction")?"ECONOMIC":"ECONOMIC";String impact=(title.matches("(?i).*(CPI|PPI|Payroll|Employment|FOMC|Fed Chair|PMI|Jobless Claims|Durable Goods|Retail Sales|GDP).*"))?"HIGH":"MEDIUM";out.add(new Event(0,String.format(Locale.US,"%s %02d:%02d",active,h,mi),type,impact,"ALL",title,""));}}
+    for(String raw:text.split("\\R")){String line=raw.trim(); if(line.isBlank())continue; var dm=datePat.matcher(line); if(dm.find()){try{
+      int month=Integer.parseInt(dm.group(2)),day=Integer.parseInt(dm.group(3));
+      int year=articleDate.getYear();
+      LocalDate candidate=LocalDate.of(year,month,day);
+      if(candidate.isBefore(articleDate.minusMonths(6))) candidate=candidate.plusYears(1);
+      else if(candidate.isAfter(articleDate.plusMonths(6))) candidate=candidate.minusYears(1);
+      active=candidate;
+    }catch(Exception ignored){} continue;} if(active==null)continue; var tm=timePat.matcher(line); while(tm.find()){int h=Integer.parseInt(tm.group(1)),mi=Integer.parseInt(tm.group(2));String ap=tm.group(3).toUpperCase(Locale.ROOT);if(h==12)h=0;if(ap.equals("PM"))h+=12;String title=tm.group(4).replaceAll("\\s+"," ").trim();String type=title.toLowerCase(Locale.ROOT).contains("fed")?"FED":title.toLowerCase(Locale.ROOT).contains("auction")?"ECONOMIC":"ECONOMIC";String impact=(title.matches("(?i).*(CPI|PPI|Payroll|Employment|FOMC|Fed Chair|PMI|Jobless Claims|Durable Goods|Retail Sales|GDP).*"))?"HIGH":"MEDIUM";out.add(new Event(0,String.format(Locale.US,"%s %02d:%02d",active,h,mi),type,impact,"ALL",title,""));}}
     return out;
   }
 
