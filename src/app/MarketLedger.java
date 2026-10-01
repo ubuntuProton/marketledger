@@ -73,6 +73,8 @@ public class MarketLedger {
   static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_YAHOO_IMPROVED=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_YAHOO_NOT_IMPROVED=new java.util.concurrent.atomic.AtomicLong();
   static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_ALPACA_IMPROVED=new java.util.concurrent.atomic.AtomicLong();
+  // V5P.2.8.2.8: usable OVERNIGHT primary >60m remains EXPIRED, but redundant query2/Alpaca recovery is suppressed.
+  static final java.util.concurrent.atomic.AtomicLong MARKET_RECOVERY_SUPPRESSED_OVERNIGHT=new java.util.concurrent.atomic.AtomicLong();
 
   // V5P.2.8.2.7: browser analysis-cycle timing diagnostics only; no scheduling behavior change.
   static final java.util.concurrent.atomic.AtomicLong ANALYSIS_CYCLES=new java.util.concurrent.atomic.AtomicLong();
@@ -1683,10 +1685,15 @@ public class MarketLedger {
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]",""); if(sym.isBlank()) throw new Exception("Invalid ticker");
     String best=null,bestSource="NONE";long bestAge=Long.MAX_VALUE;boolean recovery=false;StringBuilder diag=new StringBuilder();
     try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false,"PRIMARY");long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR");}
-    // Any candle older than 45m is stale enough to warrant an independent symbol recovery.
-    // V5P.2.8.2.7: observe why recovery fires and whether either fallback improves freshness.
+    // V5P.2.8.2.8: recovery remains available above 45m, except a usable OVERNIGHT
+    // primary older than 60m keeps its true EXPIRED state without redundant query2/Alpaca recovery.
     MARKET_RECOVERY_EVALUATIONS.incrementAndGet();
-    if(bestAge>45){
+    String recoveryPhase=marketPhaseServer();
+    boolean primaryUsable=best!=null && bestAge<Long.MAX_VALUE;
+    boolean suppressRedundantRecovery=
+        recoveryPhase.equals("OVERNIGHT") && primaryUsable && bestAge>60;
+
+    if(bestAge>45 && !suppressRedundantRecovery){
       MARKET_RECOVERY_TRIGGERED.incrementAndGet();
       if(bestAge<=60) MARKET_RECOVERY_AGE_45_TO_60.incrementAndGet();
       else if(bestAge<=180) MARKET_RECOVERY_AGE_60_TO_180.incrementAndGet();
@@ -1716,6 +1723,10 @@ public class MarketLedger {
           best=b;bestAge=a;bestSource="ALPACA_IEX_FALLBACK";
         }
       }catch(Exception e){diag.append(", alpaca=ERR");}
+    }
+    if(suppressRedundantRecovery){
+      MARKET_RECOVERY_SUPPRESSED_OVERNIGHT.incrementAndGet();
+      diag.append(", recoverySuppressed=OVERNIGHT_PRIMARY_GT60M");
     }
     if(best==null)throw new Exception("No candle data from Yahoo or Alpaca fallback for "+sym+" ("+diag+")");
     String state=bestAge<=15?"CURRENT":bestAge<=45?"AGING":bestAge<=60?"STALE":"EXPIRED";
@@ -1748,7 +1759,7 @@ public class MarketLedger {
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
     json(x,200,
-        "{\"version\":\"V5P.2.8.2.7\""
+        "{\"version\":\"V5P.2.8.2.8\""
         +",\"providerCacheEntries\":"+PROVIDER_CACHE.size()
         +",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()
         +",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()
@@ -1774,6 +1785,7 @@ public class MarketLedger {
         +",\"marketRecoveryYahooImproved\":"+MARKET_RECOVERY_YAHOO_IMPROVED.get()
         +",\"marketRecoveryYahooNotImproved\":"+MARKET_RECOVERY_YAHOO_NOT_IMPROVED.get()
         +",\"marketRecoveryAlpacaImproved\":"+MARKET_RECOVERY_ALPACA_IMPROVED.get()
+        +",\"marketRecoverySuppressedOvernight\":"+MARKET_RECOVERY_SUPPRESSED_OVERNIGHT.get()
         +",\"analysisCycles\":"+ANALYSIS_CYCLES.get()
         +",\"analysisLastDurationMs\":"+ANALYSIS_LAST_DURATION_MS.get()
         +",\"analysisMaxDurationMs\":"+ANALYSIS_MAX_DURATION_MS.get()
