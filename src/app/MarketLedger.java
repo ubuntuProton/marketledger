@@ -30,7 +30,13 @@ public class MarketLedger {
     return Integer.getInteger("marketledger.port",8080);
   }
   static final Path DATA = dataHome();
-  static final Path STOCKS = DATA.resolve("stocks.tsv"), CALLS = DATA.resolve("calls.tsv"), NOTES = DATA.resolve("notes.tsv"), EVENTS = DATA.resolve("events.tsv"), SIGNALS = DATA.resolve("signals.tsv"), SETTINGS = DATA.resolve("settings.properties");
+  static final Path STOCKS = DATA.resolve("stocks.tsv"),
+      CALLS = DATA.resolve("calls.tsv"),
+      NOTES = DATA.resolve("notes.tsv"),
+      EVENTS = DATA.resolve("events.tsv"),
+      SIGNALS = DATA.resolve("signals.tsv"),
+      POSITIONS = DATA.resolve("positions.tsv"),
+      SETTINGS = DATA.resolve("settings.properties");
   static final Path BACKUPS = DATA.resolve("backups");
   static Path dataHome(){
     String override=System.getProperty("marketledger.dataDir","").trim();
@@ -129,6 +135,29 @@ public class MarketLedger {
   record Note(long id,String title,String body,String tag,String created) {}
   record Event(long id,String when,String type,String impact,String scope,String title,String created) {}
   record Signal(long id,String symbol,long candleTs,String captured,double price,String signal,int score,String phase,double rsi,double vwap,double trend,double volRatio,double atrPct,double spreadPct,String marketText,String eventText,double r15,double r30,double r60) {}
+
+  // V5T.1: user-confirmed TRADE position lifecycle.
+  // Entry/setup signals remain independent from position/exit state.
+  record TradePosition(
+      long id,
+      String symbol,
+      String horizon,
+      String side,
+      String status,
+      double entryPrice,
+      String entryTime,
+      String entrySignal,
+      int entryScore,
+      double quantity,
+      double highestPrice,
+      double lowestPrice,
+      String exitState,
+      int exitScore,
+      String exitReason,
+      double closedPrice,
+      String closedTime,
+      double realizedPct
+  ) {}
   record NewsItem(String title,String link,String source,String published,List<String> symbols,String theme,int sourceScore,int relevanceScore,int catalystScore,String catalystClass,String catalystReason,String novelty,String provenance,String evidence,String materiality,String directness,int sourceCount,List<String> sources) {}
   static volatile String NEWS_CACHE_JSON = "{\"items\":[],\"themes\":[],\"updated\":null}";
   static volatile long NEWS_CACHE_AT = 0L;
@@ -186,15 +215,17 @@ public class MarketLedger {
       st.executeUpdate("CREATE TABLE IF NOT EXISTS market_events (id BIGINT PRIMARY KEY, event_time TEXT, type VARCHAR(40), impact VARCHAR(20), scope TEXT, title TEXT, created_at TEXT)");
       st.executeUpdate("CREATE TABLE IF NOT EXISTS research_notes (id BIGINT PRIMARY KEY, title TEXT, body TEXT, tag VARCHAR(40), created_at TEXT)");
       st.executeUpdate("CREATE TABLE IF NOT EXISTS prediction_calls (id BIGINT PRIMARY KEY, symbol VARCHAR(20), direction VARCHAR(10), baseline DOUBLE PRECISION, threshold DOUBLE PRECISION, due_date TEXT, note TEXT, status VARCHAR(20), resolved_price DOUBLE PRECISION, move_pct DOUBLE PRECISION, created_at TEXT, resolved_at TEXT)");
+      st.executeUpdate("CREATE TABLE IF NOT EXISTS trade_positions (id BIGINT PRIMARY KEY, symbol VARCHAR(20) NOT NULL, horizon VARCHAR(20) NOT NULL, side VARCHAR(10) NOT NULL, status VARCHAR(20) NOT NULL, entry_price DOUBLE PRECISION NOT NULL, entry_time TEXT, entry_signal VARCHAR(30), entry_score INTEGER, quantity DOUBLE PRECISION, highest_price DOUBLE PRECISION, lowest_price DOUBLE PRECISION, exit_state VARCHAR(30), exit_score INTEGER, exit_reason TEXT, closed_price DOUBLE PRECISION, closed_time TEXT, realized_pct DOUBLE PRECISION)");
+      st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_trade_positions_symbol_status ON trade_positions(symbol,status)");
     }
     DATABASE_READY=true; sanitizeCloudSettings(); System.out.println("Storage: PostgreSQL persistent database connected + native analytics schema ready");
   }
-  static List<Path> dataFiles(){return List.of(STOCKS,CALLS,NOTES,EVENTS,SIGNALS,SETTINGS);}
+  static List<Path> dataFiles(){return List.of(STOCKS,CALLS,NOTES,EVENTS,SIGNALS,POSITIONS,SETTINGS);}
   static void hydrateFromDatabase() throws Exception {
     if(!DATABASE_READY)return;
     try(Connection c=db(); PreparedStatement ps=c.prepareStatement("SELECT name, content FROM marketledger_files" ); ResultSet rs=ps.executeQuery()){
       while(rs.next()){
-        String name=rs.getString(1); if(!Set.of("stocks.tsv","calls.tsv","notes.tsv","events.tsv","signals.tsv","settings.properties").contains(name))continue; if(CLOUD_MODE && name.equals("settings.properties")) continue;
+        String name=rs.getString(1); if(!Set.of("stocks.tsv","calls.tsv","notes.tsv","events.tsv","signals.tsv","positions.tsv","settings.properties").contains(name))continue; if(CLOUD_MODE && name.equals("settings.properties")) continue;
         Files.write(DATA.resolve(name),rs.getBytes(2));
       }
     }
@@ -215,12 +246,13 @@ public class MarketLedger {
     if(!DATABASE_READY)return;
     try(Connection c=db()){
       c.setAutoCommit(false);
-      try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM watchlist");st.executeUpdate("DELETE FROM market_events");st.executeUpdate("DELETE FROM research_notes");st.executeUpdate("DELETE FROM prediction_calls");}
+      try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM watchlist");st.executeUpdate("DELETE FROM market_events");st.executeUpdate("DELETE FROM research_notes");st.executeUpdate("DELETE FROM prediction_calls");st.executeUpdate("DELETE FROM trade_positions");}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO watchlist(symbol,name,price,prev_price,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET name=EXCLUDED.name,price=EXCLUDED.price,prev_price=EXCLUDED.prev_price,updated_at=EXCLUDED.updated_at")){for(var z:readStocks()){ps.setString(1,z.symbol);ps.setString(2,z.name);ps.setDouble(3,z.price);ps.setDouble(4,z.prev);ps.setString(5,z.updated);ps.addBatch();}ps.executeBatch();}
       try(PreparedStatement so=c.prepareStatement("INSERT INTO signal_observations(id,symbol,candle_ts,captured_at,price,final_status,technical_score,session,rsi14,vwap,momentum_5m,relative_volume,atr_pct,spread_pct,market_context,event_context,captured_at_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::timestamptz) ON CONFLICT(id) DO UPDATE SET symbol=EXCLUDED.symbol,candle_ts=EXCLUDED.candle_ts,captured_at=EXCLUDED.captured_at,price=EXCLUDED.price,final_status=EXCLUDED.final_status,technical_score=EXCLUDED.technical_score,session=EXCLUDED.session,rsi14=EXCLUDED.rsi14,vwap=EXCLUDED.vwap,momentum_5m=EXCLUDED.momentum_5m,relative_volume=EXCLUDED.relative_volume,atr_pct=EXCLUDED.atr_pct,spread_pct=EXCLUDED.spread_pct,market_context=EXCLUDED.market_context,event_context=EXCLUDED.event_context,captured_at_ts=EXCLUDED.captured_at_ts"); PreparedStatement out=c.prepareStatement("INSERT INTO signal_outcomes(signal_id,return_15m,return_30m,return_60m) VALUES(?,?,?,?) ON CONFLICT(signal_id) DO UPDATE SET return_15m=COALESCE(signal_outcomes.return_15m,EXCLUDED.return_15m),return_30m=COALESCE(signal_outcomes.return_30m,EXCLUDED.return_30m),return_60m=COALESCE(signal_outcomes.return_60m,EXCLUDED.return_60m)")){for(var z:readSignals()){so.setLong(1,z.id);so.setString(2,z.symbol);so.setLong(3,z.candleTs);so.setString(4,z.captured);so.setDouble(5,z.price);so.setString(6,z.signal);so.setInt(7,z.score);so.setString(8,z.phase);so.setDouble(9,z.rsi);so.setDouble(10,z.vwap);so.setDouble(11,z.trend);so.setDouble(12,z.volRatio);so.setDouble(13,z.atrPct);so.setDouble(14,z.spreadPct);so.setString(15,z.marketText);so.setString(16,z.eventText);so.setString(17,z.captured==null||z.captured.isBlank()?null:z.captured+"Z");so.addBatch();out.setLong(1,z.id);if(Double.isNaN(z.r15))out.setNull(2,Types.DOUBLE);else out.setDouble(2,z.r15);if(Double.isNaN(z.r30))out.setNull(3,Types.DOUBLE);else out.setDouble(3,z.r30);if(Double.isNaN(z.r60))out.setNull(4,Types.DOUBLE);else out.setDouble(4,z.r60);out.addBatch();}so.executeBatch();out.executeBatch();}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO market_events(id,event_time,type,impact,scope,title,created_at) VALUES(?,?,?,?,?,?,?)")){for(var z:readEvents()){ps.setLong(1,z.id);ps.setString(2,z.when);ps.setString(3,z.type);ps.setString(4,z.impact);ps.setString(5,z.scope);ps.setString(6,z.title);ps.setString(7,z.created);ps.addBatch();}ps.executeBatch();}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO research_notes(id,title,body,tag,created_at) VALUES(?,?,?,?,?)")){for(var z:readNotes()){ps.setLong(1,z.id);ps.setString(2,z.title);ps.setString(3,z.body);ps.setString(4,z.tag);ps.setString(5,z.created);ps.addBatch();}ps.executeBatch();}
       try(PreparedStatement ps=c.prepareStatement("INSERT INTO prediction_calls(id,symbol,direction,baseline,threshold,due_date,note,status,resolved_price,move_pct,created_at,resolved_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")){for(var z:readCalls()){ps.setLong(1,z.id);ps.setString(2,z.symbol);ps.setString(3,z.direction);ps.setDouble(4,z.baseline);ps.setDouble(5,z.threshold);ps.setString(6,z.due);ps.setString(7,z.note);ps.setString(8,z.status);ps.setDouble(9,z.resolved);ps.setDouble(10,z.move);ps.setString(11,z.created);ps.setString(12,z.resolvedAt);ps.addBatch();}ps.executeBatch();}
+      try(PreparedStatement ps=c.prepareStatement("INSERT INTO trade_positions(id,symbol,horizon,side,status,entry_price,entry_time,entry_signal,entry_score,quantity,highest_price,lowest_price,exit_state,exit_score,exit_reason,closed_price,closed_time,realized_pct) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")){for(var z:readPositions()){ps.setLong(1,z.id);ps.setString(2,z.symbol);ps.setString(3,z.horizon);ps.setString(4,z.side);ps.setString(5,z.status);ps.setDouble(6,z.entryPrice);ps.setString(7,z.entryTime);ps.setString(8,z.entrySignal);ps.setInt(9,z.entryScore);ps.setDouble(10,z.quantity);ps.setDouble(11,z.highestPrice);ps.setDouble(12,z.lowestPrice);ps.setString(13,z.exitState);ps.setInt(14,z.exitScore);ps.setString(15,z.exitReason);ps.setDouble(16,z.closedPrice);ps.setString(17,z.closedTime);ps.setDouble(18,z.realizedPct);ps.addBatch();}ps.executeBatch();}
       c.commit();
     }catch(Exception e){throw new IOException("Native PostgreSQL sync failed: "+e.getMessage(),e);}
   }
@@ -952,7 +984,7 @@ public class MarketLedger {
   static void backupData() {
     try{
       String stamp=LocalDate.now().toString(); Path dir=BACKUPS.resolve(stamp); Files.createDirectories(dir);
-      for(Path src: List.of(STOCKS,CALLS,NOTES,EVENTS,SIGNALS,SETTINGS)) if(Files.exists(src)) Files.copy(src,dir.resolve(src.getFileName()),StandardCopyOption.REPLACE_EXISTING);
+      for(Path src: List.of(STOCKS,CALLS,NOTES,EVENTS,SIGNALS,POSITIONS,SETTINGS)) if(Files.exists(src)) Files.copy(src,dir.resolve(src.getFileName()),StandardCopyOption.REPLACE_EXISTING);
       try(var ds=Files.list(BACKUPS)){var dirs=ds.filter(Files::isDirectory).sorted(Comparator.reverseOrder()).toList(); for(int i=14;i<dirs.size();i++) deleteTree(dirs.get(i));}
     }catch(Exception e){System.err.println("Backup warning: "+e.getMessage());}
   }
@@ -987,6 +1019,9 @@ public class MarketLedger {
       if(p.equals("/api/calls") && m.equals("POST")) { addCall(x); return; }
       if(p.matches("/api/calls/\\d+/resolve") && m.equals("POST")) { resolveCall(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.matches("/api/calls/\\d+/void") && m.equals("POST")) { voidCall(x,Long.parseLong(p.split("/")[3])); return; }
+      if(p.equals("/api/positions") && m.equals("GET")) { positionsEndpoint(x); return; }
+      if(p.equals("/api/positions") && m.equals("POST")) { openPosition(x); return; }
+      if(p.matches("/api/positions/\\d+/close") && m.equals("POST")) { closePosition(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.equals("/api/notes") && m.equals("POST")) { addNote(x); return; }
       if(p.equals("/api/events") && m.equals("POST")) { addEvent(x); return; }
       if(p.equals("/api/context/schwab/sync") && m.equals("POST")) { syncSchwab(x); return; }
@@ -1043,12 +1078,14 @@ public class MarketLedger {
 
   static String dashboard() throws IOException {
     synchronized(LOCK){
-      var ss=readStocks(); var cs=readCalls(); var ns=readNotes(); var es=readEvents();
+      var ss=readStocks(); var cs=readCalls(); var ns=readNotes(); var es=readEvents(); var ps=readPositions();
       long hit=cs.stream().filter(c->c.status.equals("HIT")).count(), miss=cs.stream().filter(c->c.status.equals("MISS")).count(), open=cs.stream().filter(c->c.status.equals("OPEN")).count();
       StringBuilder b=new StringBuilder("{\"stocks\":[");
       for(int i=0;i<ss.size();i++){if(i>0)b.append(','); var s=ss.get(i); b.append("{\"symbol\":").append(q(s.symbol)).append(",\"name\":").append(q(s.name)).append(",\"price\":").append(s.price).append(",\"prev\":").append(s.prev).append(",\"updated\":").append(q(s.updated)).append('}');}
       b.append("],\"calls\":[");
       for(int i=0;i<cs.size();i++){if(i>0)b.append(',');var c=cs.get(i);b.append(callJson(c));}
+      b.append("],\"positions\":[");
+      for(int i=0;i<ps.size();i++){if(i>0)b.append(',');b.append(positionJson(ps.get(i)));}
       b.append("],\"notes\":[");
       for(int i=0;i<ns.size();i++){if(i>0)b.append(',');var n=ns.get(i);b.append("{\"id\":").append(n.id).append(",\"title\":").append(q(n.title)).append(",\"body\":").append(q(n.body)).append(",\"tag\":").append(q(n.tag)).append(",\"created\":").append(q(n.created)).append('}');}
       b.append("],\"events\":[");
@@ -1078,6 +1115,135 @@ public class MarketLedger {
   static void addCall(HttpExchange x)throws Exception{Map<String,String>f=form(x);String sym=req(f,"symbol").toUpperCase(Locale.ROOT),dir=req(f,"direction").toUpperCase(Locale.ROOT);if(!dir.equals("UP")&&!dir.equals("DOWN"))throw new Exception("Direction must be UP or DOWN");double base=num(req(f,"baseline")),thr=num0(f.get("threshold"));LocalDate.parse(req(f,"due"));synchronized(LOCK){if(readStocks().stream().noneMatch(s->s.symbol.equalsIgnoreCase(sym)))throw new Exception("Add ticker to watchlist first");var cs=readCalls();long id=cs.stream().mapToLong(Call::id).max().orElse(0)+1;cs.add(0,new Call(id,sym,dir,base,thr,f.get("due"),f.getOrDefault("note",""),"OPEN",0,0,now(),""));writeCalls(cs);}ok(x);}
   static void resolveCall(HttpExchange x,long id)throws Exception{double price=num(req(form(x),"price"));synchronized(LOCK){var cs=readCalls();boolean found=false;for(int i=0;i<cs.size();i++)if(cs.get(i).id==id){var c=cs.get(i);if(!c.status.equals("OPEN"))throw new Exception("Call already settled");cs.set(i,settled(c,price));found=true;}if(!found)throw new Exception("Call not found");writeCalls(cs);}ok(x);}
   static void voidCall(HttpExchange x,long id)throws Exception{synchronized(LOCK){var cs=readCalls();for(int i=0;i<cs.size();i++)if(cs.get(i).id==id){var c=cs.get(i);if(!c.status.equals("OPEN"))throw new Exception("Only open calls can be voided");cs.set(i,new Call(c.id,c.symbol,c.direction,c.baseline,c.threshold,c.due,c.note,"VOID",0,0,c.created,now()));}writeCalls(cs);}ok(x);}
+  static String positionJson(TradePosition z){
+    return "{\"id\":"+z.id+
+        ",\"symbol\":"+q(z.symbol)+
+        ",\"horizon\":"+q(z.horizon)+
+        ",\"side\":"+q(z.side)+
+        ",\"status\":"+q(z.status)+
+        ",\"entryPrice\":"+z.entryPrice+
+        ",\"entryTime\":"+q(z.entryTime)+
+        ",\"entrySignal\":"+q(z.entrySignal)+
+        ",\"entryScore\":"+z.entryScore+
+        ",\"quantity\":"+z.quantity+
+        ",\"highestPrice\":"+z.highestPrice+
+        ",\"lowestPrice\":"+z.lowestPrice+
+        ",\"exitState\":"+q(z.exitState)+
+        ",\"exitScore\":"+z.exitScore+
+        ",\"exitReason\":"+q(z.exitReason)+
+        ",\"closedPrice\":"+z.closedPrice+
+        ",\"closedTime\":"+q(z.closedTime)+
+        ",\"realizedPct\":"+z.realizedPct+"}";
+  }
+
+  static void positionsEndpoint(HttpExchange x)throws Exception{
+    synchronized(LOCK){
+      var a=readPositions();
+      StringBuilder b=new StringBuilder("{\"positions\":[");
+      for(int i=0;i<a.size();i++){if(i>0)b.append(',');b.append(positionJson(a.get(i)));}
+      b.append("]}");
+      json(x,200,b.toString());
+    }
+  }
+
+  static void openPosition(HttpExchange x)throws Exception{
+    Map<String,String> f=form(x);
+
+    String sym=req(f,"symbol").trim().toUpperCase(Locale.ROOT)
+        .replaceAll("[^A-Z0-9.-]","");
+    if(sym.isBlank())throw new Exception("Invalid ticker");
+
+    String horizon=f.getOrDefault("horizon","TRADE").trim().toUpperCase(Locale.ROOT);
+    String side=f.getOrDefault("side","LONG").trim().toUpperCase(Locale.ROOT);
+
+    if(!horizon.equals("TRADE"))
+      throw new Exception("V5T.1 currently supports TRADE horizon only");
+    if(!side.equals("LONG"))
+      throw new Exception("V5T.1 currently supports LONG positions only");
+
+    double entry=num(req(f,"entryPrice"));
+    if(!Double.isFinite(entry)||entry<=0)
+      throw new Exception("Entry price must be positive");
+
+    double quantity=num0(f.get("quantity"));
+    if(!Double.isFinite(quantity)||quantity<0)
+      throw new Exception("Quantity cannot be negative");
+
+    String signal=f.getOrDefault("entrySignal","").trim().toUpperCase(Locale.ROOT);
+    int score=(int)Math.round(num0(f.get("entryScore")));
+    if(score<0||score>100)throw new Exception("Entry score must be between 0 and 100");
+
+    synchronized(LOCK){
+      if(readStocks().stream().noneMatch(z->z.symbol.equalsIgnoreCase(sym)))
+        throw new Exception("Add ticker to watchlist first");
+
+      var a=readPositions();
+      if(a.stream().anyMatch(z->z.symbol.equalsIgnoreCase(sym)&&z.status.equals("OPEN")))
+        throw new Exception("An open TRADE position already exists for "+sym);
+
+      long id=a.stream().mapToLong(TradePosition::id).max().orElse(0)+1;
+
+      a.add(0,new TradePosition(
+          id,sym,"TRADE","LONG","OPEN",
+          entry,now(),signal,score,quantity,
+          entry,entry,
+          "MONITORING",0,"",
+          0,"",0
+      ));
+
+      writePositions(a);
+      json(x,200,"{\"ok\":true,\"position\":"+positionJson(a.get(0))+"}");
+    }
+  }
+
+  static void closePosition(HttpExchange x,long id)throws Exception{
+    Map<String,String> f=form(x);
+    double close=num(req(f,"price"));
+    if(!Double.isFinite(close)||close<=0)
+      throw new Exception("Close price must be positive");
+
+    String reason=f.getOrDefault("reason","USER_CONFIRMED").trim();
+    if(reason.isBlank())reason="USER_CONFIRMED";
+
+    synchronized(LOCK){
+      var a=readPositions();
+      boolean found=false;
+
+      for(int i=0;i<a.size();i++){
+        var z=a.get(i);
+        if(z.id!=id)continue;
+
+        found=true;
+        if(!z.status.equals("OPEN"))
+          throw new Exception("Position already closed");
+
+        double realized=((close/z.entryPrice)-1.0)*100.0;
+        double high=Math.max(z.highestPrice,close);
+        double low=z.lowestPrice<=0?Math.min(z.entryPrice,close):Math.min(z.lowestPrice,close);
+
+        a.set(i,new TradePosition(
+            z.id,z.symbol,z.horizon,z.side,"CLOSED",
+            z.entryPrice,z.entryTime,z.entrySignal,z.entryScore,z.quantity,
+            high,low,
+            "CLOSED",z.exitScore,reason,
+            close,now(),realized
+        ));
+        break;
+      }
+
+      if(!found)throw new Exception("Position not found");
+
+      writePositions(a);
+
+      TradePosition closed=a.stream()
+          .filter(z->z.id==id)
+          .findFirst()
+          .orElseThrow();
+
+      json(x,200,"{\"ok\":true,\"position\":"+positionJson(closed)+"}");
+    }
+  }
+
   static void addNote(HttpExchange x)throws Exception{Map<String,String>f=form(x);synchronized(LOCK){var ns=readNotes();long id=ns.stream().mapToLong(Note::id).max().orElse(0)+1;ns.add(0,new Note(id,req(f,"title"),f.getOrDefault("body",""),f.getOrDefault("tag","RESEARCH"),now()));writeNotes(ns);}ok(x);}
   static void deleteNote(HttpExchange x,long id)throws Exception{synchronized(LOCK){var ns=readNotes();ns.removeIf(n->n.id==id);writeNotes(ns);}ok(x);}
 
@@ -2125,7 +2291,38 @@ public class MarketLedger {
 
   static void exportCsv(HttpExchange x)throws IOException{StringBuilder b=new StringBuilder("id,symbol,direction,baseline,threshold_pct,due,status,resolved_price,move_pct,note,created,resolved_at\n");for(var c:readCalls())b.append(c.id).append(',').append(csv(c.symbol)).append(',').append(c.direction).append(',').append(c.baseline).append(',').append(c.threshold).append(',').append(c.due).append(',').append(c.status).append(',').append(c.resolved).append(',').append(c.move).append(',').append(csv(c.note)).append(',').append(csv(c.created)).append(',').append(csv(c.resolvedAt)).append('\n');byte[] z=b.toString().getBytes(StandardCharsets.UTF_8);x.getResponseHeaders().set("Content-Type","text/csv; charset=utf-8");x.getResponseHeaders().set("Content-Disposition","attachment; filename=market-ledger.csv");x.sendResponseHeaders(200,z.length);x.getResponseBody().write(z);x.close();}
 
-  static void seed()throws IOException{ synchronized(LOCK){if(!Files.exists(STOCKS)){writeStocks(new ArrayList<>(List.of(new Stock("NVDA","NVIDIA",0,0,""),new Stock("MU","Micron Technology",0,0,""),new Stock("COIN","Coinbase",0,0,""),new Stock("WDC","Western Digital",0,0,""),new Stock("STX","Seagate Technology",0,0,""),new Stock("BE","Bloom Energy",0,0,""),new Stock("ILMN","Illumina",0,0,""))));} if(!Files.exists(CALLS))writeCalls(new ArrayList<>()); if(!Files.exists(SIGNALS))writeSignals(new ArrayList<>()); if(!Files.exists(EVENTS))writeEvents(new ArrayList<>(List.of(new Event(1,"2026-09-21 09:30","REBALANCE","HIGH","BE","S&P 500 addition effective at Monday open",now()),new Event(2,"2026-09-21 09:30","REBALANCE","HIGH","ILMN","S&P 500 addition effective at Monday open",now()),new Event(3,"2026-09-23 09:45","ECONOMIC","HIGH","ALL","S&P Global PMI Index",now()),new Event(4,"2026-09-24 08:30","ECONOMIC","HIGH","ALL","Initial Jobless Claims",now()),new Event(5,"2026-09-25 08:30","ECONOMIC","HIGH","ALL","Durable Goods Orders",now())))); if(!Files.exists(NOTES))writeNotes(new ArrayList<>(List.of(new Note(1,"Options expiration / rebalance","Track the event, then record what actually happened. Treat directional claims as hypotheses, not guarantees.","EVENT",now()),new Note(2,"Sectors discussed","Memory / semiconductors, crypto-linked equities, storage, and index additions were recurring themes in the source conversation.","CONTEXT",now()))));}}
+  static void seed()throws IOException{ synchronized(LOCK){if(!Files.exists(STOCKS)){writeStocks(new ArrayList<>(List.of(new Stock("NVDA","NVIDIA",0,0,""),new Stock("MU","Micron Technology",0,0,""),new Stock("COIN","Coinbase",0,0,""),new Stock("WDC","Western Digital",0,0,""),new Stock("STX","Seagate Technology",0,0,""),new Stock("BE","Bloom Energy",0,0,""),new Stock("ILMN","Illumina",0,0,""))));} if(!Files.exists(CALLS))writeCalls(new ArrayList<>()); if(!Files.exists(SIGNALS))writeSignals(new ArrayList<>()); if(!Files.exists(POSITIONS))writePositions(new ArrayList<>()); if(!Files.exists(EVENTS))writeEvents(new ArrayList<>(List.of(new Event(1,"2026-09-21 09:30","REBALANCE","HIGH","BE","S&P 500 addition effective at Monday open",now()),new Event(2,"2026-09-21 09:30","REBALANCE","HIGH","ILMN","S&P 500 addition effective at Monday open",now()),new Event(3,"2026-09-23 09:45","ECONOMIC","HIGH","ALL","S&P Global PMI Index",now()),new Event(4,"2026-09-24 08:30","ECONOMIC","HIGH","ALL","Initial Jobless Claims",now()),new Event(5,"2026-09-25 08:30","ECONOMIC","HIGH","ALL","Durable Goods Orders",now())))); if(!Files.exists(NOTES))writeNotes(new ArrayList<>(List.of(new Note(1,"Options expiration / rebalance","Track the event, then record what actually happened. Treat directional claims as hypotheses, not guarantees.","EVENT",now()),new Note(2,"Sectors discussed","Memory / semiconductors, crypto-linked equities, storage, and index additions were recurring themes in the source conversation.","CONTEXT",now()))));}}
+  static List<TradePosition> readPositions()throws IOException{
+    var a=new ArrayList<TradePosition>();
+    if(!Files.exists(POSITIONS))return a;
+    for(String l:Files.readAllLines(POSITIONS)){
+      if(l.isBlank())continue;
+      String[] p=l.split("\\t",-1);
+      if(p.length<18)continue;
+      try{
+        a.add(new TradePosition(
+            Long.parseLong(p[0]),un(p[1]),un(p[2]),un(p[3]),un(p[4]),
+            d(p[5]),un(p[6]),un(p[7]),Integer.parseInt(p[8]),d(p[9]),
+            d(p[10]),d(p[11]),un(p[12]),Integer.parseInt(p[13]),un(p[14]),
+            d(p[15]),un(p[16]),d(p[17])
+        ));
+      }catch(Exception ignored){}
+    }
+    return a;
+  }
+
+  static void writePositions(List<TradePosition>a)throws IOException{
+    var l=new ArrayList<String>();
+    for(var z:a)l.add(
+        z.id+"\t"+en(z.symbol)+"\t"+en(z.horizon)+"\t"+en(z.side)+"\t"+en(z.status)+"\t"+
+        z.entryPrice+"\t"+en(z.entryTime)+"\t"+en(z.entrySignal)+"\t"+z.entryScore+"\t"+
+        z.quantity+"\t"+z.highestPrice+"\t"+z.lowestPrice+"\t"+en(z.exitState)+"\t"+
+        z.exitScore+"\t"+en(z.exitReason)+"\t"+z.closedPrice+"\t"+en(z.closedTime)+"\t"+
+        z.realizedPct
+    );
+    atomic(POSITIONS,l);
+  }
+
   static List<Stock> readStocks()throws IOException{var bySymbol=new LinkedHashMap<String,Stock>();if(!Files.exists(STOCKS))return new ArrayList<>();for(String l:Files.readAllLines(STOCKS)){if(l.isBlank())continue;String[]p=l.split("\\t",-1);if(p.length<5)continue;var z=new Stock(un(p[0]),un(p[1]),d(p[2]),d(p[3]),un(p[4]));String key=z.symbol==null?"":z.symbol.trim().toUpperCase(Locale.ROOT);if(!key.isBlank())bySymbol.put(key,z);}return new ArrayList<>(bySymbol.values());}
   static void writeStocks(List<Stock>a)throws IOException{var l=new ArrayList<String>();for(var s:a)l.add(en(s.symbol)+"\t"+en(s.name)+"\t"+s.price+"\t"+s.prev+"\t"+en(s.updated));atomic(STOCKS,l);}
   static List<Call> readCalls()throws IOException{var a=new ArrayList<Call>();if(!Files.exists(CALLS))return a;for(String l:Files.readAllLines(CALLS)){if(l.isBlank())continue;String[]p=l.split("\\t",-1);a.add(new Call(Long.parseLong(p[0]),un(p[1]),un(p[2]),d(p[3]),d(p[4]),un(p[5]),un(p[6]),un(p[7]),d(p[8]),d(p[9]),un(p[10]),un(p[11])));}return a;}
@@ -2145,7 +2342,7 @@ public class MarketLedger {
   static String q(String s){if(s==null)return"null";return "\""+s.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n").replace("\r","\\r").replace("\t","\\t")+"\"";}
   static String csv(String s){return "\""+(s==null?"":s).replace("\"","\"\"")+"\"";}
   static String callJson(Call c){return "{\"id\":"+c.id+",\"symbol\":"+q(c.symbol)+",\"direction\":"+q(c.direction)+",\"baseline\":"+c.baseline+",\"threshold\":"+c.threshold+",\"due\":"+q(c.due)+",\"note\":"+q(c.note)+",\"status\":"+q(c.status)+",\"resolved\":"+c.resolved+",\"move\":"+c.move+",\"created\":"+q(c.created)+",\"resolvedAt\":"+q(c.resolvedAt)+"}";}
-  static final List<String> BACKUP_FILES=List.of("stocks.tsv","calls.tsv","notes.tsv","events.tsv","signals.tsv");
+  static final List<String> BACKUP_FILES=List.of("stocks.tsv","calls.tsv","notes.tsv","events.tsv","signals.tsv","positions.tsv");
   static void downloadBackup(HttpExchange x)throws IOException{
     ByteArrayOutputStream bout=new ByteArrayOutputStream();
     try(ZipOutputStream z=new ZipOutputStream(bout,StandardCharsets.UTF_8)){
