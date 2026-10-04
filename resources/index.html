@@ -21,9 +21,9 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}body{overflow-wrap:anywher
 @media(max-width:700px){body{width:100vw}.wrap{width:100%;max-width:100vw;padding:8px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.toolbar,.row{align-items:stretch}.toolbarActions{display:grid;grid-template-columns:1fr;width:100%}.toolbarActions button,.toolbarActions select,.toolbarActions a,.toolbarActions a button{width:100%}.toolbarActions span{width:100%}.phoneCard .top{align-items:flex-start;flex-wrap:wrap}.phoneCard .top>*{min-width:0}.phoneGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.phoneActions{width:100%}.phoneActions>*{min-width:0}.setupQueue{grid-template-columns:minmax(0,1fr)!important}.analysis{grid-template-columns:repeat(2,minmax(0,1fr))}.grid{grid-template-columns:minmax(0,1fr)}#diagSymbols{min-width:0!important;width:100%}.scroll table,.boardTable{min-width:760px}.desktopBoard{max-width:100%;overflow-x:auto}.chart{max-width:100%}h1{font-size:20px}}
 @media(max-width:390px){.cards,.phoneGrid,.analysis{grid-template-columns:minmax(0,1fr)}.card b{font-size:18px}.box{padding:10px}}
 </style>
-</head><body><header><div class="wrap"><div><h1>Market Ledger Pro</h1><div class="sub">V5M.8.2.3 Strict Entity Identity Guard • V5P.2.8.2.11 Overnight Live Authority Diagnostics + Schwab Week Ahead Authority Guard + Real-Time Data Efficiency, Bandwidth Guard & Volume Diagnostics • V5N.1 evidence fusion • V5T.1.1 Position-Aware Exit Intelligence</div></div><div><div class="market" id="ny"></div><div class="mobile" id="mobile"></div></div></div></header><main class="wrap">
+</head><body><header><div class="wrap"><div><h1>Market Ledger Pro</h1><div class="sub">V5M.8.2.3 Strict Entity Identity Guard • V5P.2.8.2.11 Overnight Live Authority Diagnostics + Schwab Week Ahead Authority Guard + Real-Time Data Efficiency, Bandwidth Guard & Volume Diagnostics • V5N.1 evidence fusion • V5T.1.2 Running MFE/MAE Intelligence</div></div><div><div class="market" id="ny"></div><div class="mobile" id="mobile"></div></div></div></header><main class="wrap">
 <div class="cards"><div class="card"><b id="count">0</b><span>Watchlist</span></div><div class="card"><b id="strong">0</b><span>Strong setups</span></div><div class="card"><b id="buy">0</b><span>Buy setups</span></div><div class="card"><b id="wait">0</b><span>Wait / Hold</span></div><div class="card"><b id="avoid">0</b><span>Avoid</span></div><div class="card"><b id="accuracy">0%</b><span>Prediction accuracy</span></div></div><div id="setupQueue" class="setupQueue"></div>
-<div class="box" id="newsIntelBox"><div class="toolbar"><div><b>Morning News & Catalyst Intelligence</b><div class="muted">Company-specific catalysts plus market-wide theme context are separated, clustered and cross-checked against MarketLedger price/volume evidence. V5M.8.2.3 keeps source-focused discovery, freshness and subject-ownership guards, and adds strict issuer identity for collision-prone tickers plus stronger institutional-ownership detection. Institutional holdings, former spinouts, analyst actions and broad market context cannot masquerade as issuer-owned corporate events. Theme propagation is explicitly labeled and never masquerades as company-specific news. News never creates a BUY signal by itself.</div></div><div class="row"><span id="newsState" class="badge WAIT">Waiting for scan</span><button onclick="loadNewsCatalysts(true)">Refresh news</button></div></div><div id="newsThemes" class="row" style="margin-top:10px"></div><div id="newsIntel" class="setupQueue" style="margin-top:10px;margin-bottom:0"><div class="setupTile muted">News context will appear here. Market confirmation and liquidity remain separate gates.</div></div></div><div class="box" id="feedDiagBox"><div class="toolbar"><div><b>Premarket Data Diagnostics</b><div class="muted">Direct provider evidence. V5P.2.7.2 adds per-symbol fresh-candle recovery while V5P.2.7.1 stops recurring unsupported SIP/delayed_sip/BOATS probes and shows only usable evidence: Alpaca IEX, one Alpaca overnight-latest bar, and Yahoo. It does not change signal scores.</div></div><div class="row"><input id="diagSymbols" value="AMD,COIN,CRCL,MSTR" style="min-width:260px"><button onclick="runFeedDiagnostics()">Run diagnostics</button></div></div><div id="feedDiagnostics" class="setupQueue" style="margin-top:10px;margin-bottom:0"><div class="setupTile muted">Run diagnostics to inspect the actual premarket feed responses.</div></div></div><div class="box" id="openingRadarBox"><div class="toolbar"><div><b>Continuous Session Intelligence</b><div class="muted">Always-on discovery layer with V5P.2.7.2 fresh-candle recovery and V5P.2.7.1 provenance-separated provider bars and V5P.2.6 live premarket tape collection plus confidence-calibrated accumulation and setup-consistency controls. Overnight and pre-market participation, extended-session VWAP, estimated up/down volume, higher-low structure, high proximity and sector breadth can surface EARLY BULLISH WATCH before execution confirmation. Technical/risk/liquidity gates remain authoritative.</div></div><span id="radarState" class="badge WAIT">Waiting for market data</span></div><div id="openingRadar" class="setupQueue" style="margin-top:12px;margin-bottom:0"><div class="setupTile muted">Preparing the current-session intelligence view.</div></div></div><div class="installHint"><b>iPhone:</b> Open this page in Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>. MarketLedger will launch from its own Home Screen icon.</div><div class="box" id="activeTradesBox"><div class="toolbar"><div><b>Active Trades</b><div class="muted">V5T.1 position lifecycle. Positions appear only after you explicitly choose to track a trade. Setup labels remain opportunity signals and never imply that a position exists. Live P/L reuses the current analyzed price already held by MarketLedger and does not create another market-data request.</div></div><span id="activeTradeCount" class="badge WAIT">0 OPEN</span></div><div id="activeTrades" class="setupQueue" style="margin-top:12px;margin-bottom:0"><div class="setupTile muted">No active trades.</div></div><details style="margin-top:12px"><summary class="muted" style="cursor:pointer">Closed trade history</summary><div id="closedTrades" class="setupQueue" style="margin-top:10px;margin-bottom:0"><div class="setupTile muted">No closed trades yet.</div></div></details></div><div class="box"><div class="toolbar"><div><b>Real-time Setup Board</b><div class="muted">Final status first. Ranked automatically every refresh: STRONG → BUY → HOLD → WAIT → AVOID. Reason type distinguishes Confirmation, Caution and Limiting gate; risk/event/time/liquidity gates remain authoritative.</div></div><div class="toolbarActions"><select id="boardSort" onchange="renderBoard()"><option value="setup">Sort: Setup strength</option><option value="score">Sort: Technical score</option><option value="ticker">Sort: Ticker</option></select><span id="analysisUpdated" class="muted">Waiting for analysis…</span><span id="healthStatus" class="badge WAIT">Provider health: waiting</span><button onclick="enableAlerts()">Enable setup alerts</button><button class="primary" onclick="analyzeAll()">Refresh analysis</button><button onclick="refreshQuotes()">Refresh quotes</button><button onclick="exportLiveBoardCsv()">Export Live Board CSV</button><a href="/api/export"><button>Prediction Ledger CSV</button></a></div></div><div class="row" style="margin:10px 0"><select id="boardView" onchange="renderBoard()"><option value="sector">View: Sector sections</option><option value="all">View: All stocks</option><option value="leaders">View: Leaders only</option></select><span class="muted">Sector sections keep related themes together while each section retains setup-strength sorting.</span></div><div id="sectorBoard"></div><div id="mobileBoard" class="mobileBoard"></div><div id="flatBoard" class="scroll desktopBoard"><table class="boardTable"><thead><tr><th>Rank</th><th>Ticker</th><th>Final status</th><th>Technical score</th><th>Price</th><th>Session</th><th>Market / sector</th><th>Vs reg close</th><th>Extended volume</th><th>EXT engine</th><th>Reason type</th><th>Final status reason</th><th>Data freshness</th><th></th></tr></thead><tbody id="board"></tbody></table></div><div class="muted" style="margin-top:8px"><b>Technical score is structure, not probability.</b> Final status is authoritative and can be downgraded by time, stale-data, event, market/sector, spread and liquidity gates. Select Analyze for the full RSI, EMA, VWAP, ATR, bid/ask, spread, quote-size and reason detail below. This keeps the live ranking readable without losing diagnostics.</div><form class="row" onsubmit="addStock(event)" style="margin-top:12px"><input name="symbol" placeholder="Ticker" required><input name="name" placeholder="Company"><input name="price" type="number" step="any" min="0" placeholder="Fallback price" value="0"><button class="primary">Add ticker</button><button type="button" onclick="addV5OMonitoringUniverse()">Add V5O monitoring universe</button></form></div><div class="box" id="investmentRadarBox"><div class="toolbar"><div><b>Growth & Investment Radar</b><div class="muted">Separate 6–24 month research view. Price filters are discovery filters, not valuation signals. This first V5O layer uses theme quality + daily/weekly proxy trend from available market structure; fundamental/valuation feeds will be added separately rather than contaminating V5N.1 intraday scoring.</div></div><span class="badge HOLD">V5O RESEARCH LAYER</span></div><div class="row" style="margin:10px 0"><button class="priceFilter active" data-max="0" onclick="setInvestPrice(0,this)">All prices</button><button class="priceFilter" data-max="25" onclick="setInvestPrice(25,this)">Under $25</button><button class="priceFilter" data-max="50" onclick="setInvestPrice(50,this)">Under $50</button><button class="priceFilter" data-max="100" onclick="setInvestPrice(100,this)">Under $100</button><select id="investTheme" onchange="renderInvestmentRadar()"><option value="ALL">All themes</option></select></div><div id="investmentRadar" class="horizonGrid"><div class="horizonCard muted">Waiting for analysis…</div></div><div class="disclaimer" style="margin-top:10px"><b>Horizon separation:</b> TRADE uses V5N.1. SWING and INVEST are separate research views. A strong long-term theme can coexist with EXTENDED / WAIT today.</div></div><div class="box"><div class="toolbar"><div><b>Market Data Provider v2</b><div class="muted">Yahoo candles remain the automatic fallback. Add Alpaca credentials locally for bid/ask spread, quote sizes and overnight-aware liquidity. Secrets stay server-side and are never returned to the browser.</div></div><span id="providerStatus" class="badge WAIT">Loading…</span></div><form class="row" onsubmit="saveProvider(event)" style="margin-top:10px"><select name="provider" id="providerSelect"><option value="YAHOO">Yahoo fallback only</option><option value="ALPACA">Alpaca + Yahoo fallback</option></select><input name="key" placeholder="Alpaca API key (leave blank to keep)" style="min-width:230px"><input name="secret" type="password" placeholder="Alpaca secret (leave blank to keep)" style="min-width:230px"><button class="primary">Save provider</button></form><div class="muted" style="margin-top:8px">For extended-hours signals, MarketLedger now checks spread and displayed quote liquidity when authenticated data is available.</div></div><div class="box"><div class="toolbar"><div class="card">
+<div class="box" id="newsIntelBox"><div class="toolbar"><div><b>Morning News & Catalyst Intelligence</b><div class="muted">Company-specific catalysts plus market-wide theme context are separated, clustered and cross-checked against MarketLedger price/volume evidence. V5M.8.2.3 keeps source-focused discovery, freshness and subject-ownership guards, and adds strict issuer identity for collision-prone tickers plus stronger institutional-ownership detection. Institutional holdings, former spinouts, analyst actions and broad market context cannot masquerade as issuer-owned corporate events. Theme propagation is explicitly labeled and never masquerades as company-specific news. News never creates a BUY signal by itself.</div></div><div class="row"><span id="newsState" class="badge WAIT">Waiting for scan</span><button onclick="loadNewsCatalysts(true)">Refresh news</button></div></div><div id="newsThemes" class="row" style="margin-top:10px"></div><div id="newsIntel" class="setupQueue" style="margin-top:10px;margin-bottom:0"><div class="setupTile muted">News context will appear here. Market confirmation and liquidity remain separate gates.</div></div></div><div class="box" id="feedDiagBox"><div class="toolbar"><div><b>Premarket Data Diagnostics</b><div class="muted">Direct provider evidence. V5P.2.7.2 adds per-symbol fresh-candle recovery while V5P.2.7.1 stops recurring unsupported SIP/delayed_sip/BOATS probes and shows only usable evidence: Alpaca IEX, one Alpaca overnight-latest bar, and Yahoo. It does not change signal scores.</div></div><div class="row"><input id="diagSymbols" value="AMD,COIN,CRCL,MSTR" style="min-width:260px"><button onclick="runFeedDiagnostics()">Run diagnostics</button></div></div><div id="feedDiagnostics" class="setupQueue" style="margin-top:10px;margin-bottom:0"><div class="setupTile muted">Run diagnostics to inspect the actual premarket feed responses.</div></div></div><div class="box" id="openingRadarBox"><div class="toolbar"><div><b>Continuous Session Intelligence</b><div class="muted">Always-on discovery layer with V5P.2.7.2 fresh-candle recovery and V5P.2.7.1 provenance-separated provider bars and V5P.2.6 live premarket tape collection plus confidence-calibrated accumulation and setup-consistency controls. Overnight and pre-market participation, extended-session VWAP, estimated up/down volume, higher-low structure, high proximity and sector breadth can surface EARLY BULLISH WATCH before execution confirmation. Technical/risk/liquidity gates remain authoritative.</div></div><span id="radarState" class="badge WAIT">Waiting for market data</span></div><div id="openingRadar" class="setupQueue" style="margin-top:12px;margin-bottom:0"><div class="setupTile muted">Preparing the current-session intelligence view.</div></div></div><div class="installHint"><b>iPhone:</b> Open this page in Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>. MarketLedger will launch from its own Home Screen icon.</div><div class="box" id="activeTradesBox"><div class="toolbar"><div><b>Active Trades</b><div class="muted">V5T.1.2 position lifecycle with running observed MFE/MAE. Positions appear only after you explicitly choose to track a trade. Setup labels remain opportunity signals and never imply that a position exists. Live P/L reuses the current analyzed price already held by MarketLedger and does not create another market-data request.</div></div><span id="activeTradeCount" class="badge WAIT">0 OPEN</span></div><div id="activeTrades" class="setupQueue" style="margin-top:12px;margin-bottom:0"><div class="setupTile muted">No active trades.</div></div><details style="margin-top:12px"><summary class="muted" style="cursor:pointer">Closed trade history</summary><div id="closedTrades" class="setupQueue" style="margin-top:10px;margin-bottom:0"><div class="setupTile muted">No closed trades yet.</div></div></details></div><div class="box"><div class="toolbar"><div><b>Real-time Setup Board</b><div class="muted">Final status first. Ranked automatically every refresh: STRONG → BUY → HOLD → WAIT → AVOID. Reason type distinguishes Confirmation, Caution and Limiting gate; risk/event/time/liquidity gates remain authoritative.</div></div><div class="toolbarActions"><select id="boardSort" onchange="renderBoard()"><option value="setup">Sort: Setup strength</option><option value="score">Sort: Technical score</option><option value="ticker">Sort: Ticker</option></select><span id="analysisUpdated" class="muted">Waiting for analysis…</span><span id="healthStatus" class="badge WAIT">Provider health: waiting</span><button onclick="enableAlerts()">Enable setup alerts</button><button class="primary" onclick="analyzeAll()">Refresh analysis</button><button onclick="refreshQuotes()">Refresh quotes</button><button onclick="exportLiveBoardCsv()">Export Live Board CSV</button><a href="/api/export"><button>Prediction Ledger CSV</button></a></div></div><div class="row" style="margin:10px 0"><select id="boardView" onchange="renderBoard()"><option value="sector">View: Sector sections</option><option value="all">View: All stocks</option><option value="leaders">View: Leaders only</option></select><span class="muted">Sector sections keep related themes together while each section retains setup-strength sorting.</span></div><div id="sectorBoard"></div><div id="mobileBoard" class="mobileBoard"></div><div id="flatBoard" class="scroll desktopBoard"><table class="boardTable"><thead><tr><th>Rank</th><th>Ticker</th><th>Final status</th><th>Technical score</th><th>Price</th><th>Session</th><th>Market / sector</th><th>Vs reg close</th><th>Extended volume</th><th>EXT engine</th><th>Reason type</th><th>Final status reason</th><th>Data freshness</th><th></th></tr></thead><tbody id="board"></tbody></table></div><div class="muted" style="margin-top:8px"><b>Technical score is structure, not probability.</b> Final status is authoritative and can be downgraded by time, stale-data, event, market/sector, spread and liquidity gates. Select Analyze for the full RSI, EMA, VWAP, ATR, bid/ask, spread, quote-size and reason detail below. This keeps the live ranking readable without losing diagnostics.</div><form class="row" onsubmit="addStock(event)" style="margin-top:12px"><input name="symbol" placeholder="Ticker" required><input name="name" placeholder="Company"><input name="price" type="number" step="any" min="0" placeholder="Fallback price" value="0"><button class="primary">Add ticker</button><button type="button" onclick="addV5OMonitoringUniverse()">Add V5O monitoring universe</button></form></div><div class="box" id="investmentRadarBox"><div class="toolbar"><div><b>Growth & Investment Radar</b><div class="muted">Separate 6–24 month research view. Price filters are discovery filters, not valuation signals. This first V5O layer uses theme quality + daily/weekly proxy trend from available market structure; fundamental/valuation feeds will be added separately rather than contaminating V5N.1 intraday scoring.</div></div><span class="badge HOLD">V5O RESEARCH LAYER</span></div><div class="row" style="margin:10px 0"><button class="priceFilter active" data-max="0" onclick="setInvestPrice(0,this)">All prices</button><button class="priceFilter" data-max="25" onclick="setInvestPrice(25,this)">Under $25</button><button class="priceFilter" data-max="50" onclick="setInvestPrice(50,this)">Under $50</button><button class="priceFilter" data-max="100" onclick="setInvestPrice(100,this)">Under $100</button><select id="investTheme" onchange="renderInvestmentRadar()"><option value="ALL">All themes</option></select></div><div id="investmentRadar" class="horizonGrid"><div class="horizonCard muted">Waiting for analysis…</div></div><div class="disclaimer" style="margin-top:10px"><b>Horizon separation:</b> TRADE uses V5N.1. SWING and INVEST are separate research views. A strong long-term theme can coexist with EXTENDED / WAIT today.</div></div><div class="box"><div class="toolbar"><div><b>Market Data Provider v2</b><div class="muted">Yahoo candles remain the automatic fallback. Add Alpaca credentials locally for bid/ask spread, quote sizes and overnight-aware liquidity. Secrets stay server-side and are never returned to the browser.</div></div><span id="providerStatus" class="badge WAIT">Loading…</span></div><form class="row" onsubmit="saveProvider(event)" style="margin-top:10px"><select name="provider" id="providerSelect"><option value="YAHOO">Yahoo fallback only</option><option value="ALPACA">Alpaca + Yahoo fallback</option></select><input name="key" placeholder="Alpaca API key (leave blank to keep)" style="min-width:230px"><input name="secret" type="password" placeholder="Alpaca secret (leave blank to keep)" style="min-width:230px"><button class="primary">Save provider</button></form><div class="muted" style="margin-top:8px">For extended-hours signals, MarketLedger now checks spread and displayed quote liquidity when authenticated data is available.</div></div><div class="box"><div class="toolbar"><div class="card">
   <div class="sectionTitle">Outcome Engine Validation</div>
   <div class="muted">Empirical +15m / +30m / +60m returns and 60-minute MFE/MAE. This does not change signal thresholds.</div>
   <div id="outcomeEngineStatus" style="margin-top:10px">Loading outcome status…</div>
@@ -233,6 +233,48 @@ function positionLivePrice(p){
  if(age===null||age>15)return null;
  return Number(a.price)
 }
+// V5T.1.2 Running MFE/MAE Observation.
+// Uses only the fresh price already present in A[symbol].
+// This function never requests market data and never closes a position.
+const POSITION_OBSERVED_PRICE={};
+
+async function observeTrackedPosition(sym){
+ let p=openTrackedPosition(sym);
+ if(!p)return;
+
+ let live=positionLivePrice(p);
+ if(!Number.isFinite(live)||live<=0)return;
+
+ let key=String(p.id);
+ let previous=POSITION_OBSERVED_PRICE[key];
+
+ // Prevent repeated POSTs when rendering/analysis sees the identical price.
+ if(Number.isFinite(previous)&&previous===live)return;
+
+ POSITION_OBSERVED_PRICE[key]=live;
+
+ let body=new URLSearchParams({price:String(live)});
+
+ try{
+   let r=await api('/api/positions/'+p.id+'/observe',{
+     method:'POST',
+     headers:{'Content-Type':'application/x-www-form-urlencoded'},
+     body
+   });
+
+   if(r?.position){
+     let i=(D.positions||[]).findIndex(
+       x=>Number(x.id)===Number(p.id)
+     );
+     if(i>=0)D.positions[i]=r.position;
+   }
+ }catch(e){
+   // Permit the same observation to retry after a transient failure.
+   delete POSITION_OBSERVED_PRICE[key];
+   console.warn('Position observation failed',sym,e);
+ }
+}
+
 function positionPnlPct(p,live){
  if(!Number.isFinite(live)||!Number.isFinite(Number(p.entryPrice))||Number(p.entryPrice)<=0)return null;
  return (live/Number(p.entryPrice)-1)*100
@@ -249,19 +291,14 @@ function positionExitIntelligence(p){
  let a=A[p.symbol];
 
  let unavailable=(why)=>({
-   state:'DATA STALE',
-   score:null,
-   reason:why,
-   evidence:[],
-   pnlPct:null,
-   atrMove:null
+   state:'DATA STALE',score:null,reason:why,evidence:[],pnlPct:null,atrMove:null,
+   technicalUsable:false,technicalAge:null,technicalState:null,
+   highestPrice:null,lowestPrice:null,mfePct:null,maePct:null,
+   peakProfitPct:null,givebackPct:null,givebackRatio:null
  });
 
  let finite=v=>
-   v!==null &&
-   v!==undefined &&
-   v!=='' &&
-   Number.isFinite(Number(v));
+   v!==null && v!==undefined && v!=='' && Number.isFinite(Number(v));
 
  if(!a)return unavailable('Current analysis unavailable');
 
@@ -275,18 +312,28 @@ function positionExitIntelligence(p){
 
  let age=finite(a.quoteAge)?Number(a.quoteAge):
          finite(a.liveAge)?Number(a.liveAge):null;
-
  if(age===null||age>15)
    return unavailable('Current price evidence is stale');
 
  let pnl=(live/entry-1)*100;
 
+ // V5T.1.2 durable observed position-path intelligence.
+ // These extrema are observations from fresh prices already acquired by normal analysis.
+ let persistedHigh=finite(p.highestPrice)?Number(p.highestPrice):entry;
+ let persistedLow=finite(p.lowestPrice)?Number(p.lowestPrice):entry;
+ let high=Math.max(entry,persistedHigh,live);
+ let low=Math.min(entry,persistedLow,live);
+ let mfePct=(high/entry-1)*100;
+ let maePct=(low/entry-1)*100;
+ let peakProfitPct=Math.max(0,mfePct);
+ let givebackPct=Math.max(0,peakProfitPct-pnl);
+ let givebackRatio=peakProfitPct>0?givebackPct/peakProfitPct:0;
+
  // Technical exit evidence follows MarketLedger candle-freshness authority.
  // CURRENT/AGING (<=45m) may participate. STALE/EXPIRED may not.
  let techAge=
    finite(a.technicalCandleAge)?Number(a.technicalCandleAge):
-   finite(a.candleAge)?Number(a.candleAge):
-   null;
+   finite(a.candleAge)?Number(a.candleAge):null;
 
  let techState=
    a.technicalFreshness ||
@@ -296,173 +343,78 @@ function positionExitIntelligence(p){
     techAge<=60?'STALE':'EXPIRED');
 
  let technicalUsable=
-   !a.quoteOnly &&
-   techAge!==null &&
-   techAge<=45 &&
+   !a.quoteOnly && techAge!==null && techAge<=45 &&
    !['STALE','EXPIRED'].includes(techState);
 
- let atrPct=technicalUsable&&finite(a.atrPct)
-   ?Number(a.atrPct)
-   :null;
-
- let atrMove=
-   Number.isFinite(atrPct)&&atrPct>0
-     ?pnl/atrPct
-     :null;
+ let atrPct=technicalUsable&&finite(a.atrPct)?Number(a.atrPct):null;
+ let atrMove=Number.isFinite(atrPct)&&atrPct>0?pnl/atrPct:null;
 
  let score=0;
  let evidence=[];
 
- let belowVwap=
-   technicalUsable &&
-   finite(a.vwap) &&
-   live<Number(a.vwap);
+ let meaningfulPeak=peakProfitPct>=1.0;
+ let materialGiveback=meaningfulPeak && givebackPct>=0.75 && givebackRatio>=0.35;
+ let severeGiveback=peakProfitPct>=1.5 && givebackPct>=1.25 && givebackRatio>=0.55;
 
- let belowEma9=
-   technicalUsable &&
-   finite(a.ema9) &&
-   live<Number(a.ema9);
+ if(materialGiveback){
+   score+=10;
+   evidence.push('gave back '+givebackPct.toFixed(2)+'% from observed peak');
+ }
+ if(severeGiveback){
+   score+=8;
+   evidence.push('more than half of observed peak profit surrendered');
+ }
 
- let bearishEma=
-   technicalUsable &&
-   finite(a.ema9) &&
-   finite(a.ema21) &&
-   Number(a.ema9)<Number(a.ema21);
-
- let negativeMomentum=
-   technicalUsable &&
-   finite(a.trend) &&
-   Number(a.trend)<-.35;
-
- let weakRsi=
-   technicalUsable &&
-   finite(a.rsi) &&
-   Number(a.rsi)<42;
-
- let technicalWeak=
-   technicalUsable &&
-   finite(a.score) &&
-   Number(a.score)<48;
-
- let technicalFailure=
-   technicalUsable &&
-   finite(a.score) &&
-   Number(a.score)<35;
-
- let marketWeak=
-   technicalUsable &&
-   a.marketConfirm?.total>=2 &&
-   a.marketConfirm.neg>=2;
-
- let highEvent=
-   a.event?.impact==='HIGH';
-
- let spread=
-   finite(a.micro?.spreadPct)
-     ?Number(a.micro.spreadPct)
-     :null;
-
- let liquidityWeak=
-   a.micro?.available &&
-   Number.isFinite(spread) &&
-   spread>(['PRE','POST','OVERNIGHT'].includes(a.phaseKey)?.60:.40);
+ let belowVwap=technicalUsable&&finite(a.vwap)&&live<Number(a.vwap);
+ let belowEma9=technicalUsable&&finite(a.ema9)&&live<Number(a.ema9);
+ let bearishEma=technicalUsable&&finite(a.ema9)&&finite(a.ema21)&&Number(a.ema9)<Number(a.ema21);
+ let negativeMomentum=technicalUsable&&finite(a.trend)&&Number(a.trend)<-.35;
+ let weakRsi=technicalUsable&&finite(a.rsi)&&Number(a.rsi)<42;
+ let technicalWeak=technicalUsable&&finite(a.score)&&Number(a.score)<48;
+ let technicalFailure=technicalUsable&&finite(a.score)&&Number(a.score)<35;
+ let marketWeak=technicalUsable&&a.marketConfirm?.total>=2&&a.marketConfirm.neg>=2;
+ let highEvent=a.event?.impact==='HIGH';
+ let spread=finite(a.micro?.spreadPct)?Number(a.micro.spreadPct):null;
+ let liquidityWeak=a.micro?.available&&Number.isFinite(spread)&&spread>(['PRE','POST','OVERNIGHT'].includes(a.phaseKey)?.60:.40);
 
  if(!technicalUsable){
-   evidence.push(
-     'technical exit evidence unavailable/stale' +
-     (techAge!==null?' ('+techAge+'m)':'')
-   );
+   evidence.push('technical exit evidence unavailable/stale'+(techAge!==null?' ('+techAge+'m)':''));
  }
-
- if(belowVwap){
-   score+=18;
-   evidence.push('price below VWAP');
- }
-
- if(belowEma9){
-   score+=10;
-   evidence.push('price below EMA9');
- }
-
- if(bearishEma){
-   score+=16;
-   evidence.push('EMA9 below EMA21');
- }
-
- if(negativeMomentum){
-   score+=14;
-   evidence.push('negative 30m momentum');
- }
-
- if(weakRsi){
-   score+=8;
-   evidence.push('RSI weakening');
- }
-
- if(technicalWeak){
-   score+=10;
-   evidence.push('technical score below constructive range');
- }
-
- if(technicalFailure){
-   score+=10;
-   evidence.push('technical structure failed');
- }
-
- if(marketWeak){
-   score+=10;
-   evidence.push('market/sector confirmation weak');
- }
-
- if(highEvent){
-   score+=8;
-   evidence.push('high-impact event risk');
- }
-
- if(liquidityWeak){
-   score+=8;
-   evidence.push('spread/liquidity deteriorated');
- }
+ if(belowVwap){score+=18;evidence.push('price below VWAP')}
+ if(belowEma9){score+=10;evidence.push('price below EMA9')}
+ if(bearishEma){score+=16;evidence.push('EMA9 below EMA21')}
+ if(negativeMomentum){score+=14;evidence.push('negative 30m momentum')}
+ if(weakRsi){score+=8;evidence.push('RSI weakening')}
+ if(technicalWeak){score+=10;evidence.push('technical score below constructive range')}
+ if(technicalFailure){score+=10;evidence.push('technical structure failed')}
+ if(marketWeak){score+=10;evidence.push('market/sector confirmation weak')}
+ if(highEvent){score+=8;evidence.push('high-impact event risk')}
+ if(liquidityWeak){score+=8;evidence.push('spread/liquidity deteriorated')}
 
  if(Number.isFinite(atrMove)){
-   if(atrMove<=-1.5){
-     score+=22;
-     evidence.push('loss exceeds 1.5 ATR from entry');
-   }else if(atrMove<=-1.0){
-     score+=14;
-     evidence.push('loss exceeds 1 ATR from entry');
-   }
+   if(atrMove<=-1.5){score+=22;evidence.push('loss exceeds 1.5 ATR from entry')}
+   else if(atrMove<=-1.0){score+=14;evidence.push('loss exceeds 1 ATR from entry')}
  }
-
- // Absolute entry-relative loss is current price evidence.
- // It may raise caution but cannot create EXIT/STRONG EXIT without
- // usable technical deterioration.
- if(pnl<=-3){
-   score+=12;
-   evidence.push('position down at least 3%');
- }else if(pnl<=-1.5){
-   score+=7;
-   evidence.push('position down at least 1.5%');
- }
+ if(pnl<=-3){score+=12;evidence.push('position down at least 3%')}
+ else if(pnl<=-1.5){score+=7;evidence.push('position down at least 1.5%')}
 
  score=Math.max(0,Math.min(100,Math.round(score)));
 
- let failures=[
-   belowVwap,
-   bearishEma,
-   negativeMomentum,
-   technicalFailure,
-   marketWeak
- ].filter(Boolean).length;
-
+ let failures=[belowVwap,bearishEma,negativeMomentum,technicalFailure,marketWeak].filter(Boolean).length;
  let state='HOLD POSITION';
 
+ // Profit-management states require usable technical evidence. Giveback alone never manufactures a sell state.
  if(technicalUsable && pnl>0){
    if(Number.isFinite(atrMove)&&atrMove>=2.0){
      state='TAKE PROFIT / TRIM';
      evidence.unshift('position extended at least 2 ATR above entry');
-   }else if(Number.isFinite(atrMove)&&atrMove>=1.0 &&
-            (belowVwap||belowEma9||negativeMomentum)){
+   }else if(severeGiveback&&(belowVwap||belowEma9||negativeMomentum)){
+     state='TAKE PROFIT / TRIM';
+     evidence.unshift('large giveback from observed peak with weakening structure');
+   }else if(materialGiveback){
+     state='PROTECT PROFIT';
+     evidence.unshift('material giveback from observed peak');
+   }else if(Number.isFinite(atrMove)&&atrMove>=1.0&&(belowVwap||belowEma9||negativeMomentum)){
      state='PROTECT PROFIT';
      evidence.unshift('profitable position is losing short-term structure');
    }
@@ -472,28 +424,18 @@ function positionExitIntelligence(p){
    state='STRONG EXIT';
  }else if(technicalUsable && score>=48 && failures>=2){
    state='EXIT';
- }else if(technicalUsable &&
-          state==='HOLD POSITION' &&
-          pnl>0 &&
+ }else if(technicalUsable && state==='HOLD POSITION' && pnl>0 &&
           (belowVwap||belowEma9||negativeMomentum)){
    state='PROTECT PROFIT';
  }
 
- let reason=evidence.length
-   ?evidence.slice(0,4).join(' • ')
-   :'No material exit deterioration detected';
+ let reason=evidence.length?evidence.slice(0,4).join(' • '):'No material exit deterioration detected';
 
  return{
-   state,
-   score,
-   reason,
-   evidence,
-   pnlPct:pnl,
-   atrMove,
-   technicalUsable,
-   technicalAge:techAge,
-   technicalState:techState
- }
+   state,score,reason,evidence,pnlPct:pnl,atrMove,
+   technicalUsable,technicalAge:techAge,technicalState:techState,
+   highestPrice:high,lowestPrice:low,mfePct,maePct,peakProfitPct,givebackPct,givebackRatio
+ };
 }
 function renderPositions(){
  let open=(D.positions||[]).filter(p=>p.status==='OPEN');
@@ -529,6 +471,12 @@ function renderPositions(){
      : 'Exit risk '+exit.score+'/100';
 
    let exitReason=esc(exit.reason||'No exit evidence available');
+   let pathText=
+  Number.isFinite(exit.mfePct)&&Number.isFinite(exit.maePct)
+    ?'MFE '+(exit.mfePct>=0?'+':'')+exit.mfePct.toFixed(2)+'% • '+
+     'MAE '+(exit.maePct>=0?'+':'')+exit.maePct.toFixed(2)+'% • '+
+     'Peak giveback '+exit.givebackPct.toFixed(2)+'%'
+    :'MFE / MAE unavailable';
 
    return `<div class=setupTile>
      <div class=row style="justify-content:space-between">
@@ -547,8 +495,9 @@ function renderPositions(){
        ${esc(p.entryTime||'')}
      </div>
      <div class=meta><b>${riskText}</b> • ${exitReason}</div>
+<div class=meta>${pathText}</div>
      <div class=meta>
-       V5T.1.1 advisory exit intelligence • tracked position remains OPEN until you explicitly close it.
+       V5T.1.2 running MFE/MAE + advisory exit intelligence • tracked position remains OPEN until you explicitly close it.
      </div>
      <div class=row style="margin-top:8px">
        <button onclick="analyze('${esc(p.symbol)}')">Analyze</button>
@@ -747,7 +696,7 @@ async function analyze(sym,openDetail=true){try{
  toast('Refreshing '+sym+' candles…');
  try{M[sym]=await api('/api/microstructure/'+encodeURIComponent(sym));if(M[sym]?.fresh){HEALTH.microOk.add(sym);HEALTH.microFail.delete(sym)}else{HEALTH.microFail.add(sym);HEALTH.microOk.delete(sym)}}catch(e){M[sym]={available:false};HEALTH.microFail.add(sym);HEALTH.microOk.delete(sym)}
  let c=await fetchCandles(sym);let prov=crossSourceSanity(sym,c,M[sym]);if(prov.disagreement){A[sym]=quarantineBaseline(sym,'cross-source price sanity guard',c,prov);delete ERR[sym];HEALTH.candleFail.add(sym);HEALTH.candleOk.delete(sym);if(openDetail)selected=sym;if(!analysisRunning||openDetail)renderBoard();if(openDetail)drawSelected();return}tapeObserve(sym,c,M[sym]);c=mergePremarketTape(sym,c);
- if(c.length<10){if(M[sym]?.fresh){A[sym]=quoteBaseline(sym,'not enough candle data',c);delete ERR[sym];HEALTH.candleFail.add(sym);HEALTH.candleOk.delete(sym);if(openDetail)selected=sym;if(!analysisRunning||openDetail)renderBoard();if(openDetail)drawSelected();return}A[sym]=unavailableBaseline(sym,'not enough candle data');delete ERR[sym];HEALTH.candleFail.add(sym);HEALTH.candleOk.delete(sym);if(openDetail)selected=sym;if(!analysisRunning||openDetail)renderBoard();if(openDetail)drawSelected();return}A[sym]=applyCandleFreshnessAuthority(calc(c,sym));A[sym].preTape=tapeQuality(sym);A[sym].provenance=prov;A[sym].candleSource=c.at(-1)?.source||'UNKNOWN';delete ERR[sym];HEALTH.candleOk.add(sym);HEALTH.candleFail.delete(sym);setupAlert(sym,A[sym]);if(openDetail)selected=sym;if(!analysisRunning||openDetail)renderBoard();if(openDetail){drawSelected();}await rememberSignal(sym,A[sym],c.at(-1)?.t||Date.now());
+ if(c.length<10){if(M[sym]?.fresh){A[sym]=quoteBaseline(sym,'not enough candle data',c);delete ERR[sym];HEALTH.candleFail.add(sym);HEALTH.candleOk.delete(sym);if(openDetail)selected=sym;if(!analysisRunning||openDetail)renderBoard();if(openDetail)drawSelected();return}A[sym]=unavailableBaseline(sym,'not enough candle data');delete ERR[sym];HEALTH.candleFail.add(sym);HEALTH.candleOk.delete(sym);if(openDetail)selected=sym;if(!analysisRunning||openDetail)renderBoard();if(openDetail)drawSelected();return}A[sym]=applyCandleFreshnessAuthority(calc(c,sym));A[sym].preTape=tapeQuality(sym);A[sym].provenance=prov;A[sym].candleSource=c.at(-1)?.source||'UNKNOWN';delete ERR[sym];HEALTH.candleOk.add(sym);HEALTH.candleFail.delete(sym);setupAlert(sym,A[sym]);await observeTrackedPosition(sym);if(openDetail)selected=sym;if(!analysisRunning||openDetail)renderBoard();if(openDetail){drawSelected();}await rememberSignal(sym,A[sym],c.at(-1)?.t||Date.now());
  }catch(e){HEALTH.candleFail.add(sym);HEALTH.candleOk.delete(sym);if(M[sym]?.fresh){A[sym]=quoteBaseline(sym,e.message||'candle request failed',[]);delete ERR[sym]}else{A[sym]=unavailableBaseline(sym,e.message||'candle request failed');delete ERR[sym]};console.error('Analyze failed',sym,e);if(!analysisRunning||openDetail)renderBoard();if(openDetail&&A[sym]){selected=sym;drawSelected()}if(ERR[sym])toast(sym+': '+ERR[sym])}}
 let analysisRunning=false,analysisTimer=null;const ANALYSIS_CONCURRENCY=4;let ANALYSIS_TIMING={cycles:0,lastStart:0,lastEnd:0,lastDurationMs:0,maxDurationMs:0,lastStartToStartMs:0};function scheduleNextAnalysis(delay=120000){if(analysisTimer)clearTimeout(analysisTimer);analysisTimer=setTimeout(()=>analyzeAll(),delay)}function candlesFromPayload(j,source='UNKNOWN'){let r=j?.chart?.result?.[0];if(!r)return[];source=r?.meta?.provider||source;let quality=r?.meta?.quality||'';let q=r.indicators?.quote?.[0],ts=r.timestamp||[],c=[];for(let i=0;i<ts.length;i++){let o=q.open?.[i],h=q.high?.[i],l=q.low?.[i],cl=q.close?.[i],v=q.volume?.[i];if([o,h,l,cl].every(Number.isFinite))c.push({t:ts[i]*1000,o,h,l,c:cl,v:v||0,source,quality})}return c}function mergeCandles(a,b){let m=new Map;for(let x of [...a,...b])m.set(x.t,x);return [...m.values()].sort((x,y)=>x.t-y.t)}
 // V5P.2.8.1: aggregate genuine Yahoo 1m volume into the existing 5m candle buckets.

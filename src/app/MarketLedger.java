@@ -1022,6 +1022,7 @@ public class MarketLedger {
       if(p.equals("/api/positions") && m.equals("GET")) { positionsEndpoint(x); return; }
       if(p.equals("/api/positions") && m.equals("POST")) { openPosition(x); return; }
       if(p.matches("/api/positions/\\d+/close") && m.equals("POST")) { closePosition(x,Long.parseLong(p.split("/")[3])); return; }
+      if(p.matches("/api/positions/\\d+/observe") && m.equals("POST")) { observePosition(x,Long.parseLong(p.split("/")[3])); return; }
       if(p.equals("/api/notes") && m.equals("POST")) { addNote(x); return; }
       if(p.equals("/api/events") && m.equals("POST")) { addEvent(x); return; }
       if(p.equals("/api/context/schwab/sync") && m.equals("POST")) { syncSchwab(x); return; }
@@ -1193,6 +1194,67 @@ public class MarketLedger {
 
       writePositions(a);
       json(x,200,"{\"ok\":true,\"position\":"+positionJson(a.get(0))+"}");
+    }
+  }
+
+  static void observePosition(HttpExchange x,long id)throws Exception{
+    Map<String,String> f=form(x);
+    double price=num(req(f,"price"));
+    if(!Double.isFinite(price)||price<=0)
+      throw new Exception("Observation price must be positive");
+
+    synchronized(LOCK){
+      var a=readPositions();
+      boolean found=false;
+      boolean changed=false;
+      TradePosition observed=null;
+
+      for(int i=0;i<a.size();i++){
+        var z=a.get(i);
+        if(z.id!=id)continue;
+
+        found=true;
+        if(!z.status.equals("OPEN"))
+          throw new Exception("Position is not open");
+
+        double oldHigh=
+            Double.isFinite(z.highestPrice)&&z.highestPrice>0
+                ?z.highestPrice:z.entryPrice;
+
+        double oldLow=
+            Double.isFinite(z.lowestPrice)&&z.lowestPrice>0
+                ?z.lowestPrice:z.entryPrice;
+
+        double high=Math.max(oldHigh,price);
+        double low=Math.min(oldLow,price);
+
+        if(Double.compare(high,oldHigh)!=0 ||
+           Double.compare(low,oldLow)!=0){
+
+          observed=new TradePosition(
+              z.id,z.symbol,z.horizon,z.side,z.status,
+              z.entryPrice,z.entryTime,z.entrySignal,z.entryScore,z.quantity,
+              high,low,
+              z.exitState,z.exitScore,z.exitReason,
+              z.closedPrice,z.closedTime,z.realizedPct
+          );
+
+          a.set(i,observed);
+          changed=true;
+        }else{
+          observed=z;
+        }
+
+        break;
+      }
+
+      if(!found)throw new Exception("Position not found");
+
+      if(changed)writePositions(a);
+
+      json(x,200,
+          "{\"ok\":true,\"changed\":"+changed+
+          ",\"position\":"+positionJson(observed)+"}");
     }
   }
 
