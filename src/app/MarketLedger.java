@@ -1116,6 +1116,17 @@ public class MarketLedger {
   static void addCall(HttpExchange x)throws Exception{Map<String,String>f=form(x);String sym=req(f,"symbol").toUpperCase(Locale.ROOT),dir=req(f,"direction").toUpperCase(Locale.ROOT);if(!dir.equals("UP")&&!dir.equals("DOWN"))throw new Exception("Direction must be UP or DOWN");double base=num(req(f,"baseline")),thr=num0(f.get("threshold"));LocalDate.parse(req(f,"due"));synchronized(LOCK){if(readStocks().stream().noneMatch(s->s.symbol.equalsIgnoreCase(sym)))throw new Exception("Add ticker to watchlist first");var cs=readCalls();long id=cs.stream().mapToLong(Call::id).max().orElse(0)+1;cs.add(0,new Call(id,sym,dir,base,thr,f.get("due"),f.getOrDefault("note",""),"OPEN",0,0,now(),""));writeCalls(cs);}ok(x);}
   static void resolveCall(HttpExchange x,long id)throws Exception{double price=num(req(form(x),"price"));synchronized(LOCK){var cs=readCalls();boolean found=false;for(int i=0;i<cs.size();i++)if(cs.get(i).id==id){var c=cs.get(i);if(!c.status.equals("OPEN"))throw new Exception("Call already settled");cs.set(i,settled(c,price));found=true;}if(!found)throw new Exception("Call not found");writeCalls(cs);}ok(x);}
   static void voidCall(HttpExchange x,long id)throws Exception{synchronized(LOCK){var cs=readCalls();for(int i=0;i<cs.size();i++)if(cs.get(i).id==id){var c=cs.get(i);if(!c.status.equals("OPEN"))throw new Exception("Only open calls can be voided");cs.set(i,new Call(c.id,c.symbol,c.direction,c.baseline,c.threshold,c.due,c.note,"VOID",0,0,c.created,now()));}writeCalls(cs);}ok(x);}
+  static long localTimestampEpoch(String value){
+  try{
+    if(value==null||value.isBlank())return 0L;
+    return LocalDateTime.parse(value,ISO)
+        .atZone(ZoneId.systemDefault())
+        .toInstant()
+        .toEpochMilli();
+  }catch(Exception e){
+    return 0L;
+  }
+}
   static String positionJson(TradePosition z){
     return "{\"id\":"+z.id+
         ",\"symbol\":"+q(z.symbol)+
@@ -1124,6 +1135,7 @@ public class MarketLedger {
         ",\"status\":"+q(z.status)+
         ",\"entryPrice\":"+z.entryPrice+
         ",\"entryTime\":"+q(z.entryTime)+
+        ",\"entryEpoch\":"+localTimestampEpoch(z.entryTime)+
         ",\"entrySignal\":"+q(z.entrySignal)+
         ",\"entryScore\":"+z.entryScore+
         ",\"quantity\":"+z.quantity+
@@ -1134,6 +1146,7 @@ public class MarketLedger {
         ",\"exitReason\":"+q(z.exitReason)+
         ",\"closedPrice\":"+z.closedPrice+
         ",\"closedTime\":"+q(z.closedTime)+
+        ",\"closedEpoch\":"+localTimestampEpoch(z.closedTime)+
         ",\"realizedPct\":"+z.realizedPct+"}";
   }
 
