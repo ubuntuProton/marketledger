@@ -998,16 +998,16 @@ public class MarketLedger {
       if(p.equals("/login") && m.equals("GET")){loginPage(x,"");return;}
       if(p.equals("/login") && m.equals("POST")){login(x);return;}
       if(p.equals("/logout")){logout(x);return;}
-      if(!authorized(x)){
-        if(p.startsWith("/api/")){json(x,401,"{\"error\":\"Authentication required\"}");return;}
-        redirect(x,"/login");return;
-      }
-      if(p.equals("/") && m.equals("GET")) { bytes(x,200,"text/html; charset=utf-8",resource("/resources/index.html")); return; }
       if(p.equals("/manifest.webmanifest") && m.equals("GET")) { bytes(x,200,"application/manifest+json; charset=utf-8",resource("/resources/manifest.webmanifest")); return; }
       if(p.equals("/sw.js") && m.equals("GET")) { bytes(x,200,"application/javascript; charset=utf-8",resource("/resources/sw.js")); return; }
       if(p.equals("/icon-192.png") && m.equals("GET")) { bytes(x,200,"image/png",resource("/resources/icon-192.png")); return; }
       if(p.equals("/icon-512.png") && m.equals("GET")) { bytes(x,200,"image/png",resource("/resources/icon-512.png")); return; }
       if(p.equals("/apple-touch-icon.png") && m.equals("GET")) { bytes(x,200,"image/png",resource("/resources/apple-touch-icon.png")); return; }
+      if(!authorized(x)){
+        if(p.startsWith("/api/")){json(x,401,"{\"error\":\"Authentication required\"}");return;}
+        redirect(x,"/login");return;
+      }
+      if(p.equals("/") && m.equals("GET")) { bytes(x,200,"text/html; charset=utf-8",resource("/resources/index.html")); return; }
       if(p.equals("/api/dashboard") && m.equals("GET")) { json(x,200,dashboard()); return; }
       if(p.equals("/api/signals") && m.equals("POST")) { recordSignal(x); return; }
       if(p.equals("/api/signals/performance") && m.equals("GET")) { json(x,200,signalPerformance()); return; }
