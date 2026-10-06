@@ -1645,7 +1645,7 @@ public class MarketLedger {
   static String newsDedupeKey(String title){return title.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]"," ").replaceAll("\\b(update|breaking|exclusive)\\b"," ").replaceAll("\\s+"," ").trim();}
   static String xmlTag(String s,String tag){var m=java.util.regex.Pattern.compile("(?is)<"+tag+"(?:\\s[^>]*)?>(.*?)</"+tag+">").matcher(s);return m.find()?m.group(1).trim():"";}
   static String xmlDecode(String s){return s.replace("<![CDATA[","").replace("]]>","").replace("&amp;","&").replace("&quot;","\\\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">");}
-  static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";case "ALAB"->"ASTERA LABS";case "CRDO"->"CREDO TECHNOLOGY";case "CRWV"->"COREWEAVE";case "NBIS"->"NEBIUS";case "TEM"->"TEMPUS AI";case "CLS"->"CELESTICA";case "ETN"->"EATON";case "GEV"->"GE VERNOVA";case "LEU"->"CENTRUS ENERGY";case "PSTG"->"PURE STORAGE";case "CRCL"->"CIRCLE INTERNET";case "NET"->"CLOUDFLARE";case "NOW"->"SERVICENOW";case "ON"->"ONSEMI";case "IT"->"GARTNER";case "ALL"->"ALLSTATE";case "AI"->"C3.AI";default->"";};}
+  static String newsAlias(String s){return switch(s){case "AMD"->"ADVANCED MICRO DEVICES";case "INTC"->"INTEL";case "NVDA"->"NVIDIA";case "META"->"META PLATFORMS";case "ARM"->"ARM HOLDINGS";case "MU"->"MICRON";case "AVGO"->"BROADCOM";case "TSM"->"TAIWAN SEMICONDUCTOR";case "COHR"->"COHERENT";case "MSTR"->"MICROSTRATEGY";case "AAPL"->"APPLE";case "WDC"->"WESTERN DIGITAL";case "STX"->"SEAGATE";case "COIN"->"COINBASE";case "VRT"->"VERTIV";case "VST"->"VISTRA";case "CEG"->"CONSTELLATION ENERGY";case "PWR"->"QUANTA SERVICES";case "BE"->"BLOOM ENERGY";case "ILMN"->"ILLUMINA";case "ALAB"->"ASTERA LABS";case "CRDO"->"CREDO TECHNOLOGY";case "CRWV"->"COREWEAVE";case "NBIS"->"NEBIUS";case "TEM"->"TEMPUS AI";case "CLS"->"CELESTICA";case "ETN"->"EATON";case "GEV"->"GE VERNOVA";case "LEU"->"CENTRUS ENERGY";case "P"->"EVERPURE";case "CRCL"->"CIRCLE INTERNET";case "NET"->"CLOUDFLARE";case "NOW"->"SERVICENOW";case "ON"->"ONSEMI";case "IT"->"GARTNER";case "ALL"->"ALLSTATE";case "AI"->"C3.AI";default->"";};}
   static int sourceScore(String source){String s=source.toLowerCase(Locale.ROOT);if(s.contains("reuters"))return 100;if(s.contains("schwab"))return 95;if(s.contains("sec")||s.contains("business wire")||s.contains("globe newswire"))return 90;if(s.contains("cnbc")||s.contains("bloomberg")||s.contains("associated press"))return 85;if(s.contains("barron"))return 82;if(s.contains("yahoo finance")||s.contains("marketwatch"))return 78;if(s.contains("thestreet")||s.contains("the street")||s.contains("benzinga"))return 74;return 60;}
   static String newsTheme(String s){if(s.matches(".*(investigation|lawsuit|settlement|recall|ban|approval|antitrust|export control).*"))return "Legal / Regulatory";if(s.matches(".*(earnings|revenue|guidance|profit|eps|sales).*"))return "Earnings / Guidance";if(s.matches(".*(acquisition|merger|partnership|contract|buyout|stake|investment).*"))return "Deals / Partnerships";if(s.matches(".*(ai|artificial intelligence|data center|datacenter|gpu|cpu|semiconductor|chip).*"))return "AI / Compute / Semiconductors";if(s.matches(".*(fed|rate|yield|inflation|cpi|jobs|payroll|treasury).*"))return "Rates / Macro";if(s.matches(".*(bitcoin|crypto|ethereum).*"))return "Crypto";return "Company / Market News";}
 
@@ -2197,11 +2197,19 @@ public class MarketLedger {
         body.getBytes(StandardCharsets.UTF_8));
   }
 
+  // V5P.2.8.2.11.1: bounded provider failure attribution; diagnostics only.
+  static String providerError(Exception e){
+    String m=e==null?"unknown":String.valueOf(e.getMessage());
+    if(m==null||m.isBlank()||m.equals("null"))m=e==null?"unknown":e.getClass().getSimpleName();
+    m=m.replaceAll("[\\r\\n\\t]+"," ").replaceAll("\\s+"," ").trim();
+    return m.length()>120?m.substring(0,120):m;
+  }
+
   static void marketData(HttpExchange x,String raw)throws Exception{
     countMarketWorkload(requestWorkload(x));
     String sym=raw.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9.^=-]",""); if(sym.isBlank()) throw new Exception("Invalid ticker");
     String best=null,bestSource="NONE";long bestAge=Long.MAX_VALUE;boolean recovery=false;StringBuilder diag=new StringBuilder();
-    try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false,"PRIMARY");long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR");}
+    try{String b=yahooChartRequest(sym,"query1.finance.yahoo.com",false,"PRIMARY");long a=yahooBodyAgeMinutes(b);best=b;bestAge=a;bestSource="YAHOO";diag.append("batch=").append(a).append("m");}catch(Exception e){diag.append("batch=ERR(").append(providerError(e)).append(")");}
     // V5P.2.8.2.8: recovery remains available above 45m, except a usable OVERNIGHT
     // primary older than 60m keeps its true EXPIRED state without redundant query2/Alpaca recovery.
     MARKET_RECOVERY_EVALUATIONS.incrementAndGet();
@@ -2228,7 +2236,7 @@ public class MarketLedger {
         if(a<bestAge){best=b;bestAge=a;bestSource="YAHOO_SINGLE";}
       }catch(Exception e){
         MARKET_RECOVERY_YAHOO_NOT_IMPROVED.incrementAndGet();
-        diag.append(", yahooSingle=ERR");
+        diag.append(", yahooSingle=ERR(").append(providerError(e)).append(")");
       }
 
       try{
@@ -2239,7 +2247,7 @@ public class MarketLedger {
           MARKET_RECOVERY_ALPACA_IMPROVED.incrementAndGet();
           best=b;bestAge=a;bestSource="ALPACA_IEX_FALLBACK";
         }
-      }catch(Exception e){diag.append(", alpaca=ERR");}
+      }catch(Exception e){diag.append(", alpaca=ERR(").append(providerError(e)).append(")");}
     }
     if(suppressRedundantRecovery){
       MARKET_RECOVERY_SUPPRESSED_OVERNIGHT.incrementAndGet();
@@ -2276,7 +2284,7 @@ public class MarketLedger {
   static void bandwidthStatus(HttpExchange x)throws Exception{
     long raw=RESPONSE_RAW_BYTES.get(),wire=RESPONSE_WIRE_BYTES.get();
     json(x,200,
-        "{\"version\":\"V5P.2.8.2.11\""
+        "{\"version\":\"V5P.2.8.2.11.1\""
         +",\"providerCacheEntries\":"+PROVIDER_CACHE.size()
         +",\"cacheHits\":"+PROVIDER_CACHE_HITS.get()
         +",\"cacheMisses\":"+PROVIDER_CACHE_MISSES.get()
