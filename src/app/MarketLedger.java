@@ -1655,6 +1655,15 @@ public class MarketLedger {
   static SchwabSyncResult syncSchwabCalendar()throws Exception{
     String attempt=now();
     SchwabSyncResult previous=LAST_SCHWAB_SYNC;
+
+    // V5P.2.8.2.15: diagnostics below describe this attempt, not stale
+    // metadata copied from a previous successful synchronization.
+    int attemptCandidates=0;
+    int attemptFound=0;
+    String attemptSource="";
+    String attemptTitle="";
+    LocalDate attemptPublished=null;
+
     try{
       HttpClient client=HttpClient.newBuilder()
       .followRedirects(HttpClient.Redirect.NORMAL)
@@ -1730,9 +1739,17 @@ public class MarketLedger {
     // newest validated official publication is authoritative.
     // Never silently fall back to an older Week Ahead when the newest
     // publication changes format or fails parsing.
+    attemptCandidates=candidates.size();
+
     SchwabCandidate selected=candidates.get(0);
+    attemptSource=selected.url();
+    attemptTitle=selected.title();
+    attemptPublished=selected.published();
+
     List<Event> imported=parseSchwabCalendar(
       bodies.get(selected.url()),selected.published());
+
+    attemptFound=imported.size();
 
     if(imported.isEmpty())
       throw new Exception(
@@ -1770,11 +1787,13 @@ public class MarketLedger {
     }catch(Exception e){
       String failure=e.getMessage()==null?"Schwab sync failed":e.getMessage();
 
-      // Preserve the last successful authority while exposing this failed attempt.
+      // Report the failed attempt itself. lastSuccess remains historical;
+      // current counters/source/title/published must never masquerade as
+      // evidence from a previous successful synchronization.
       LAST_SCHWAB_SYNC=new SchwabSyncResult(
         false,
-        previous.candidates(),previous.found(),0,
-        previous.source(),previous.title(),previous.published(),
+        attemptCandidates,attemptFound,0,
+        attemptSource,attemptTitle,attemptPublished,
         attempt,previous.lastSuccess(),failure);
 
       throw e;
@@ -1865,16 +1884,117 @@ public class MarketLedger {
 
   static List<Event> parseSchwabCalendar(String text,LocalDate articleDate){
     var out=new ArrayList<Event>(); LocalDate active=null;
-    var datePat=java.util.regex.Pattern.compile("(?i)(Monday|Tuesday|Wednesday|Thursday|Friday)\\s*,?\\s*(\\d{1,2})/(\\d{1,2})");
-    var timePat=java.util.regex.Pattern.compile("(?i)(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\s*:?\\s*([^\\n]{3,120})");
-    for(String raw:text.split("\\R")){String line=raw.trim(); if(line.isBlank())continue; var dm=datePat.matcher(line); if(dm.find()){try{
-      int month=Integer.parseInt(dm.group(2)),day=Integer.parseInt(dm.group(3));
-      int year=articleDate.getYear();
-      LocalDate candidate=LocalDate.of(year,month,day);
-      if(candidate.isBefore(articleDate.minusMonths(6))) candidate=candidate.plusYears(1);
-      else if(candidate.isAfter(articleDate.plusMonths(6))) candidate=candidate.minusYears(1);
-      active=candidate;
-    }catch(Exception ignored){} continue;} if(active==null)continue; var tm=timePat.matcher(line); while(tm.find()){int h=Integer.parseInt(tm.group(1)),mi=Integer.parseInt(tm.group(2));String ap=tm.group(3).toUpperCase(Locale.ROOT);if(h==12)h=0;if(ap.equals("PM"))h+=12;String title=tm.group(4).replaceAll("\\s+"," ").trim();String type=title.toLowerCase(Locale.ROOT).contains("fed")?"FED":title.toLowerCase(Locale.ROOT).contains("auction")?"ECONOMIC":"ECONOMIC";String impact=(title.matches("(?i).*(CPI|PPI|Payroll|Employment|FOMC|Fed Chair|PMI|Jobless Claims|Durable Goods|Retail Sales|GDP).*"))?"HIGH":"MEDIUM";out.add(new Event(0,String.format(Locale.US,"%s %02d:%02d",active,h,mi),type,impact,"ALL",title,""));}}
+
+    // V5P.2.8.2.15: current Schwab articles explicitly separate Economic Data
+    // from Notable Earnings. When that marker exists, parse only the economic
+    // section so timed earnings content cannot become a macro event. Articles
+    // without the marker retain legacy whole-text parsing.
+    boolean scopedEconomicSection=java.util.regex.Pattern.compile(
+      "(?i)Economic\\s+Data\\s*\\(ET\\)").matcher(text).find();
+    boolean inEconomicSection=!scopedEconomicSection;
+
+    // V5P.2.8.2.15: Schwab has used both numeric dates ("Monday, 9/28")
+    // and textual dates ("Monday, October 12"). Preserve both formats.
+    var numericDatePat=java.util.regex.Pattern.compile(
+      "(?i)(Monday|Tuesday|Wednesday|Thursday|Friday)\\s*,?\\s*(\\d{1,2})/(\\d{1,2})");
+
+    var textualDatePat=java.util.regex.Pattern.compile(
+      "(?i)(Monday|Tuesday|Wednesday|Thursday|Friday)\\s*,?\\s*"+
+      "(January|February|March|April|May|June|July|August|September|October|November|December)"+
+      "\\s+(\\d{1,2})(?:\\s*,\\s*(20\\d{2}))?");
+
+    var timePat=java.util.regex.Pattern.compile(
+      "(?i)(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\s*:?\\s*([^\\n]{3,120})");
+
+    for(String raw:text.split("\\R")){
+      String line=raw.trim();
+      if(line.isBlank())continue;
+
+      if(scopedEconomicSection){
+        if(java.util.regex.Pattern.compile(
+            "(?i)Economic\\s+Data\\s*\\(ET\\)").matcher(line).find()){
+          inEconomicSection=true;
+          active=null;
+          continue;
+        }
+
+        if(inEconomicSection &&
+           java.util.regex.Pattern.compile(
+             "(?i)Notable\\s+Earnings").matcher(line).find()){
+          break;
+        }
+
+        if(!inEconomicSection)continue;
+      }
+
+      var nd=numericDatePat.matcher(line);
+      var td=textualDatePat.matcher(line);
+
+      if(nd.find()){
+        try{
+          int month=Integer.parseInt(nd.group(2));
+          int day=Integer.parseInt(nd.group(3));
+          int year=articleDate.getYear();
+
+          LocalDate candidate=LocalDate.of(year,month,day);
+          if(candidate.isBefore(articleDate.minusMonths(6)))
+            candidate=candidate.plusYears(1);
+          else if(candidate.isAfter(articleDate.plusMonths(6)))
+            candidate=candidate.minusYears(1);
+
+          active=candidate;
+        }catch(Exception ignored){}
+        continue;
+      }
+
+      if(td.find()){
+        try{
+          int month=java.time.Month.valueOf(
+            td.group(2).toUpperCase(Locale.ROOT)).getValue();
+          int day=Integer.parseInt(td.group(3));
+          int year=td.group(4)==null
+            ? articleDate.getYear()
+            : Integer.parseInt(td.group(4));
+
+          LocalDate candidate=LocalDate.of(year,month,day);
+
+          if(td.group(4)==null){
+            if(candidate.isBefore(articleDate.minusMonths(6)))
+              candidate=candidate.plusYears(1);
+            else if(candidate.isAfter(articleDate.plusMonths(6)))
+              candidate=candidate.minusYears(1);
+          }
+
+          active=candidate;
+        }catch(Exception ignored){}
+        continue;
+      }
+
+      if(active==null)continue;
+
+      var tm=timePat.matcher(line);
+      while(tm.find()){
+        int h=Integer.parseInt(tm.group(1));
+        int mi=Integer.parseInt(tm.group(2));
+        String ap=tm.group(3).toUpperCase(Locale.ROOT);
+
+        if(h==12)h=0;
+        if(ap.equals("PM"))h+=12;
+
+        String title=tm.group(4).replaceAll("\\s+"," ").trim();
+        String lower=title.toLowerCase(Locale.ROOT);
+        String type=lower.contains("fed")?"FED":"ECONOMIC";
+
+        String impact=title.matches(
+          "(?i).*(CPI|PPI|Payroll|Employment|FOMC|Fed Chair|PMI|Jobless Claims|Durable Goods|Retail Sales|GDP).*")
+          ?"HIGH":"MEDIUM";
+
+        out.add(new Event(
+          0,
+          String.format(Locale.US,"%s %02d:%02d",active,h,mi),
+          type,impact,"ALL",title,""));
+      }
+    }
     return out;
   }
 

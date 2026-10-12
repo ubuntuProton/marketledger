@@ -655,7 +655,51 @@ function marketCalendar(){let z=new Intl.DateTimeFormat('en-CA',{timeZone:'Ameri
 function marketPhase(){let t=nyParts(),m=t.min,cal=marketCalendar();if(t.day==='Sat'||(t.day==='Sun'&&m<1200)||(t.day==='Fri'&&m>=1200))return{key:'CLOSED',name:'Market closed',gate:'WAIT',why:'24/5 equity session closed — signals are historical'};if(t.day==='Sun'&&m>=1200)return{key:'OVERNIGHT',name:'Overnight • regular market closed',gate:'WAIT',why:'Sunday overnight session — live indicative data where available; regular market closed'};if(cal.closed)return{key:'CLOSED',name:'Exchange holiday',gate:'WAIT',why:cal.why+' — U.S. equities closed'};if(cal.early&&m>=780)return{key:'CLOSED',name:'Early close',gate:'WAIT',why:cal.earlyWhy+' — regular session ended 1:00 ET'};if(m<240||m>=1200)return{key:'OVERNIGHT',name:'Overnight • regular market closed',gate:'WAIT',why:'overnight session — live indicative data where available; regular market closed'};if(m<570)return{key:'PRE',name:'Pre-market • regular market closed',gate:'WAIT',why:'pre-market — live extended-hours data; regular market closed'};if(m<630)return{key:'OPEN',name:'Opening volatility',gate:'WAIT',why:'9:30–10:30 ET no-chase window'};if(m<690)return{key:'DISCOVERY',name:'Price discovery',gate:null,why:'10:30–11:30 ET opening structure test'};if(m<810)return{key:'CONFIRM',name:'Confirmation window',gate:null,why:'11:30–1:30 ET confirmation window'};if(m<930)return{key:'AFTERNOON',name:'Afternoon',gate:null,why:'1:30–3:30 ET late-entry discipline'};if(m<960)return{key:'CLOSE',name:'Closing volatility',gate:'WAIT',why:'3:30–4:00 ET closing/rebalance volatility'};return{key:'POST',name:'After-hours • regular market closed',gate:'WAIT',why:'after-hours — live extended-hours data; regular market closed'}}
 function extendedStats(c){let latest=c.at(-1)?.t||Date.now(),dayKey=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(latest));let same=c.filter(x=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(x.t))===dayKey);let reg=0,pre=0,post=0,overnight=0;for(let x of same){let m=nyParts(x.t).min,v=x.v||0;if(m>=570&&m<960)reg+=v;else if(m>=240&&m<570)pre+=v;else if(m>=960&&m<1200)post+=v;else overnight+=v}let ext=pre+post+overnight,ratio=reg?ext/reg:0;return{reg,pre,post,overnight,ext,ratio,text:'Pre '+fmtVol(pre)+' • AH '+fmtVol(post)+' • ON '+fmtVol(overnight)}}
 function fmtVol(v){return v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'K':String(Math.round(v||0))}
-function eventRisk(sym){let n=nyParts(),now=Date.parse(n.ymd+'T'+String(n.h).padStart(2,'0')+':'+String(n.m).padStart(2,'0')+':00Z'),best=null;for(let e of (D.events||[])){let scope=(e.scope||'ALL').toUpperCase();if(scope!=='ALL'&&scope!==sym.toUpperCase())continue;let t=Date.parse((e.when||'').replace(' ','T')+':00Z');if(!Number.isFinite(t))continue;let d=(t-now)/60000,window=e.type==='EARNINGS'?1440:(e.impact==='HIGH'?45:e.impact==='MEDIUM'?30:15),after=e.type==='EARNINGS'?-90:-15;if(d>=after&&d<=window){if(!best||e.impact==='HIGH'||Math.abs(d)<Math.abs(best.minutes))best={...e,minutes:Math.round(d)}}}return best}
+// V5P.2.8.2.15: legacy event.when values are America/New_York wall-clock times.
+// Convert ET wall time to a real instant before event-risk arithmetic so DST
+// transitions cannot introduce a one-hour error.
+function easternWallTimeMs(v){
+ let m=String(v||'').trim().match(/^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2})(?::(\\d{2}))?$/);
+ if(!m)return NaN;
+ let y=+m[1],mo=+m[2],d=+m[3],h=+m[4],mi=+m[5],sec=+(m[6]||0);
+ let guess=Date.UTC(y,mo-1,d,h,mi,sec);
+ // Resolve the America/New_York offset from Intl rather than hard-coding
+ // EDT/EST. Iterate because the first UTC guess can lie on the other side
+ // of a DST transition from the requested New York wall time.
+ for(let i=0;i<3;i++){
+   let z=nyParts(guess);
+   let shown=Date.UTC(
+     +z.ymd.slice(0,4),+z.ymd.slice(5,7)-1,+z.ymd.slice(8,10),
+     z.h,z.m,sec
+   );
+   let next=guess+(Date.UTC(y,mo-1,d,h,mi,sec)-shown);
+   if(next===guess)break;
+   guess=next;
+ }
+ let check=nyParts(guess);
+ return check.ymd===`${String(y).padStart(4,'0')}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`&&
+        check.h===h&&check.m===mi ? guess : NaN;
+}
+
+function eventRiskAt(sym,nowMs){
+ let best=null;
+ for(let e of (D.events||[])){
+   let scope=(e.scope||'ALL').toUpperCase();
+   if(scope!=='ALL'&&scope!==sym.toUpperCase())continue;
+   let t=easternWallTimeMs(e.when);
+   if(!Number.isFinite(t))continue;
+   let d=(t-nowMs)/60000;
+   let window=e.type==='EARNINGS'?1440:(e.impact==='HIGH'?45:e.impact==='MEDIUM'?30:15);
+   let after=e.type==='EARNINGS'?-90:-15;
+   if(d>=after&&d<=window){
+     if(!best||e.impact==='HIGH'||Math.abs(d)<Math.abs(best.minutes))
+       best={...e,minutes:Math.round(d)};
+   }
+ }
+ return best;
+}
+
+function eventRisk(sym){return eventRiskAt(sym,Date.now())}
 function sessionCandles(c){let reg=c.filter(x=>{let t=nyParts(x.t);return t.day!=='Sat'&&t.day!=='Sun'&&t.min>=570&&t.min<960});if(!reg.length)return c;let ymd=nyParts(reg.at(-1).t).ymd;return reg.filter(x=>nyParts(x.t).ymd===ymd)}
 function previousRegularClose(c){let reg=c.filter(x=>{let t=nyParts(x.t);return t.day!=='Sat'&&t.day!=='Sun'&&t.min>=570&&t.min<960});if(!reg.length)return null;let latest=nyParts(reg.at(-1).t).ymd,prior=reg.filter(x=>nyParts(x.t).ymd!==latest);return prior.length?prior.at(-1).c:null}
 const BENCH={};
