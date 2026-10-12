@@ -659,7 +659,7 @@ function fmtVol(v){return v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0
 // Convert ET wall time to a real instant before event-risk arithmetic so DST
 // transitions cannot introduce a one-hour error.
 function easternWallTimeMs(v){
- let m=String(v||'').trim().match(/^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2})(?::(\\d{2}))?$/);
+ let m=String(v||'').trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
  if(!m)return NaN;
  let y=+m[1],mo=+m[2],d=+m[3],h=+m[4],mi=+m[5],sec=+(m[6]||0);
  let guess=Date.UTC(y,mo-1,d,h,mi,sec);
